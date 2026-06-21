@@ -34,3 +34,4 @@ plan/*
 issues/*
 screenshots/*
 *.txt
+.cache/*

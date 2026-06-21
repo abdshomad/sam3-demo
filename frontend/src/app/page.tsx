@@ -122,7 +122,7 @@ export default function Home() {
   const [selectedAsset, setSelectedAsset] = useState<string>("images/truck.jpg");
   const [assetType, setAssetType] = useState<"image" | "video">("image");
   const [prompt, setPrompt] = useState<string>("truck");
-  const [promptMode, setPromptMode] = useState<"text" | "click">("text");
+  const [promptMode, setPromptMode] = useState<"text" | "click" | "identify">("text");
   const [clicks, setClicksState] = useState<ClickPoint[]>([]);
   const clicksRef = useRef<ClickPoint[]>([]);
 
@@ -132,6 +132,20 @@ export default function Home() {
   };
 
   const [clickLabel, setClickLabel] = useState<boolean>(true); // true = positive, false = negative
+
+  interface ClassificationCandidate {
+    class_name: string;
+    confidence: number;
+  }
+
+  interface SegmentedCrop {
+    crop_url: string;
+    class_name: string;
+    description?: string;
+    candidates?: ClassificationCandidate[];
+  }
+  const [segmentedCrops, setSegmentedCrops] = useState<SegmentedCrop[]>([]);
+  const [assetCandidates, setAssetCandidates] = useState<ClassificationCandidate[]>([]);
   
   const [loading, setLoading] = useState<boolean>(false);
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
@@ -262,9 +276,11 @@ export default function Home() {
     setAssetType(type);
     setOutputUrl(null);
     setClicks([]);
+    setSegmentedCrops([]);
     setSessionId(null);
     setDescription("");
     setDetectedObjects([]);
+    setAssetCandidates([]);
     
     // Choose suitable default prompts
     if (path.includes("truck")) setPrompt("truck");
@@ -312,6 +328,7 @@ export default function Home() {
 
   const clearClicks = () => {
     setClicks([]);
+    setSegmentedCrops([]);
     setOutputUrl(null);
     setSessionId(null);
   };
@@ -332,6 +349,7 @@ export default function Home() {
       if (data.success) {
         setOutputUrl(data.output_url);
         setSessionId(data.session_id);
+        setSegmentedCrops(data.crops || []);
       } else {
         alert("Inference failed: " + data.detail);
       }
@@ -368,6 +386,7 @@ export default function Home() {
         // so without a unique query param the browser serves the stale image.
         setOutputUrl(`${data.output_url}?t=${Date.now()}`);
         setSessionId(data.session_id);
+        setSegmentedCrops(data.crops || []);
       } else {
         alert("Interactive click inference failed: " + data.detail);
       }
@@ -384,6 +403,7 @@ export default function Home() {
     setDescribing(true);
     setDescription("");
     setDetectedObjects([]);
+    setAssetCandidates([]);
     try {
       const res = await fetch("/api/describe", {
         method: "POST",
@@ -398,6 +418,7 @@ export default function Home() {
       if (data.success) {
         setDescription(data.description);
         setDetectedObjects(data.objects || []);
+        setAssetCandidates(data.candidates || []);
       } else {
         alert("Description failed: " + data.detail);
       }
@@ -769,11 +790,14 @@ export default function Home() {
                       )}
                     </div>
                     
-                    {/* Prompt Controls Bar directly below the image */}
-                    <div className="w-full bg-black/40 border border-white/5 rounded-2xl p-4 shadow-xl">
-                      {/* Mode selection if image */}
-                      {assetType === "image" && (
-                        <div className="grid grid-cols-2 gap-2 mb-3 bg-white/5 p-1 rounded-xl border border-white/5">
+                    {/* Prompt Controls Card */}
+                    <div className="bg-black/40 border border-white/5 rounded-2xl p-4 shadow-xl flex flex-col justify-start space-y-3 w-full mt-4">
+                      <span className="text-[10px] text-slate-400 uppercase tracking-widest font-mono font-bold block mb-1">
+                        Prompt Controls
+                      </span>
+                      {/* Mode selection */}
+                      {assetType === "image" ? (
+                        <div className="grid grid-cols-3 gap-2 mb-1 bg-white/5 p-1 rounded-xl border border-white/5">
                           <button
                             onClick={() => setPromptMode("text")}
                             className={`py-1 rounded-lg text-xs font-medium transition-all ${
@@ -794,11 +818,55 @@ export default function Home() {
                           >
                             Click Prompt
                           </button>
+                          <button
+                            onClick={() => {
+                              setPromptMode("identify");
+                              if (!description && !describing) {
+                                describeAsset();
+                              }
+                            }}
+                            className={`py-1 rounded-lg text-xs font-medium transition-all ${
+                              promptMode === "identify"
+                                ? "bg-indigo-600 text-white shadow"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            Identify Objects
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-2 mb-1 bg-white/5 p-1 rounded-xl border border-white/5">
+                          <button
+                            onClick={() => setPromptMode("text")}
+                            className={`py-1 rounded-lg text-xs font-medium transition-all ${
+                              promptMode === "text"
+                                ? "bg-indigo-600 text-white shadow"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            Text Prompt
+                          </button>
+                          <button
+                            onClick={() => {
+                              setPromptMode("identify");
+                              if (!description && !describing) {
+                                describeAsset();
+                              }
+                            }}
+                            className={`py-1 rounded-lg text-xs font-medium transition-all ${
+                              promptMode === "identify"
+                                ? "bg-indigo-600 text-white shadow"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            Identify Objects
+                          </button>
                         </div>
                       )}
 
-                      {promptMode === "text" || assetType === "video" ? (
-                        <div className="space-y-3 w-full">
+                      {/* Tab Contents */}
+                      {(promptMode === "text" || assetType === "video") && (
+                        <div className="space-y-3 w-full flex-1 flex flex-col justify-between">
                           <div className="flex space-x-2 w-full">
                             <input
                               type="text"
@@ -839,8 +907,10 @@ export default function Home() {
                             </div>
                           )}
                         </div>
-                      ) : (
-                        <div className="space-y-3">
+                      )}
+
+                      {promptMode === "click" && assetType === "image" && (
+                        <div className="space-y-3 flex-1 flex flex-col justify-between">
                           <div className="flex items-center justify-between">
                             <div className="flex items-center space-x-2">
                               <span className="text-[10px] uppercase tracking-wider text-slate-500 font-mono">Label:</span>
@@ -887,6 +957,208 @@ export default function Home() {
                           </button>
                         </div>
                       )}
+
+                      {promptMode === "identify" && (
+                        <div className="space-y-3 flex-1 flex flex-col justify-between">
+                          {/* Title / Technical Status */}
+                          <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                            <div className="flex items-center space-x-2">
+                              <div className="w-4.5 h-4.5 rounded-lg bg-gradient-to-tr from-purple-500 to-indigo-600 flex items-center justify-center font-bold text-white text-[9px] px-1">
+                                {isTechnicalMode ? "Q3" : "AI"}
+                              </div>
+                              <span className="text-[10px] text-slate-400 uppercase tracking-widest font-mono font-bold">
+                                {isTechnicalMode ? "Qwen3-VL Vision Assistant" : "Auto-Identification Assistant"}
+                              </span>
+                            </div>
+                            {isTechnicalMode && (
+                              <span className="text-[8px] text-slate-500 font-mono">
+                                VL: {currentActiveVl.split("/").pop()}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Re-run button */}
+                          <button
+                            onClick={describeAsset}
+                            disabled={describing || !selectedAsset}
+                            className="w-full bg-white/5 hover:bg-white/10 active:scale-[0.99] border border-white/10 transition-all text-slate-300 py-1.5 rounded-xl text-[10px] font-mono flex items-center justify-center space-x-2 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                          >
+                            {describing ? (
+                              <>
+                                <div className="w-3.5 h-3.5 border-2 border-slate-300 border-t-transparent rounded-full animate-spin" />
+                                <span>Analyzing...</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>🔄 Re-run Analysis</span>
+                              </>
+                            )}
+                          </button>
+
+                          {/* Loader */}
+                          {describing && (
+                            <div className="flex flex-col items-center justify-center py-4 space-y-2">
+                              <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                              <span className="text-[10px] text-slate-500 font-mono animate-pulse">Running multimodal pipeline...</span>
+                            </div>
+                          )}
+
+                          {/* Content */}
+                          {!describing && (description || assetCandidates.length > 0 || detectedObjects.length > 0) && (
+                            <div className="space-y-3 flex-1 overflow-y-auto max-h-[220px] custom-scrollbar pr-1">
+                              {/* Descriptive text output */}
+                              {description && (
+                                <div className="bg-[#07070F]/60 border border-white/5 rounded-xl p-3 space-y-1">
+                                  <span className="text-[9px] uppercase tracking-wider text-slate-400 font-mono font-bold block">
+                                    Description
+                                  </span>
+                                  <p className="text-[11px] text-slate-300 leading-relaxed font-sans whitespace-pre-wrap">
+                                    {description}
+                                  </p>
+                                </div>
+                              )}
+
+                              {/* Classification Candidates (Overall Asset) */}
+                              {assetCandidates.length > 0 && (
+                                <div className="space-y-1.5">
+                                  <span className="text-[9px] uppercase tracking-wider text-slate-400 font-mono font-bold block">
+                                    Asset Class Candidates
+                                  </span>
+                                  <div className="space-y-1">
+                                    {assetCandidates.map((cand, idx) => (
+                                      <div key={idx} className="flex items-center justify-between text-xs bg-white/5 px-2.5 py-1.5 rounded-lg">
+                                        <span className={`capitalize truncate mr-2 ${idx === 0 ? "font-bold text-emerald-400" : "text-slate-300"}`}>
+                                          {cand.class_name}
+                                        </span>
+                                        <span className={`font-mono text-[9px] px-1.5 py-0.5 rounded flex-shrink-0 ${idx === 0 ? "bg-emerald-500/20 text-emerald-300 font-semibold" : "bg-white/5 text-slate-400"}`}>
+                                          {Math.round(cand.confidence * 100)}%
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Detected Segmentable Objects buttons */}
+                              {detectedObjects.length > 0 && (
+                                <div className="space-y-2">
+                                  <span className="text-[9px] uppercase tracking-wider text-slate-400 font-mono font-bold block">
+                                    {isTechnicalMode ? "Select an object or part to segment with SAM3" : "Choose Object to Segment:"}
+                                  </span>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {detectedObjects.map((obj) => {
+                                      const isActive = prompt === obj.prompt;
+                                      return (
+                                        <div key={obj.name} className="flex flex-col space-y-1 w-full bg-white/5 border border-white/10 rounded-xl p-2.5">
+                                          <div className="flex items-center justify-between">
+                                            <h4 className="text-xs font-bold text-white capitalize">{obj.name}</h4>
+                                            <button
+                                              onClick={() => segmentObject(obj.prompt)}
+                                              className={`px-2 py-1 rounded-lg text-[10px] font-semibold transition-all active:scale-[0.98] ${
+                                                isActive
+                                                  ? "bg-indigo-600 text-white shadow border border-indigo-400"
+                                                  : "bg-white/10 hover:bg-white/15 text-white border border-white/5"
+                                              }`}
+                                            >
+                                              {isActive ? "✓ Active" : "Segment"}
+                                            </button>
+                                          </div>
+                                          {isTechnicalMode && obj.attributes && obj.attributes.length > 0 && (
+                                            <span className="text-[9px] text-slate-400 italic">Attributes: {obj.attributes.join(", ")}</span>
+                                          )}
+                                          {obj.sub_objects && obj.sub_objects.length > 0 && (
+                                            <div className="flex flex-wrap gap-1.5 mt-1.5 pt-1.5 border-t border-white/5">
+                                              {obj.sub_objects.map((sub) => {
+                                                const isSubActive = prompt === sub.prompt;
+                                                return (
+                                                  <button
+                                                    key={sub.name}
+                                                    onClick={() => segmentObject(sub.prompt)}
+                                                    className={`flex items-center px-2 py-0.5 rounded-lg text-[9px] font-medium transition-all active:scale-[0.98] ${
+                                                      isSubActive
+                                                        ? "bg-purple-600 text-white border border-purple-400"
+                                                        : "bg-purple-950/20 hover:bg-purple-900/30 text-purple-200 border border-purple-500/20"
+                                                    }`}
+                                                    title={`Prompt: ${sub.prompt}`}
+                                                  >
+                                                    <span>• {sub.name}</span>
+                                                  </button>
+                                                );
+                                              })}
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Empty State */}
+                          {!describing && !description && assetCandidates.length === 0 && detectedObjects.length === 0 && (
+                            <div className="text-center py-5 text-slate-600 text-[10px] font-mono border border-dashed border-white/5 rounded-xl bg-black/10 flex-1 flex items-center justify-center">
+                              Select "Identify Objects" tab to automatically find segmentable parts and predict labels.
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Model Configuration Selector for Technical Mode */}
+                      {isTechnicalMode && (
+                        <div className="space-y-2 border-t border-white/5 pt-2">
+                          <span className="text-[9px] uppercase tracking-wider text-slate-500 font-mono font-bold block">
+                            Model Configurations
+                          </span>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="space-y-1">
+                              <label className="block text-[8px] uppercase tracking-wider text-slate-400 font-mono">VL Model</label>
+                              <select
+                                value={vlModel}
+                                onChange={(e) => setVlModel(e.target.value)}
+                                className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[10px] text-white focus:outline-none"
+                              >
+                                {availableVlModels.map(m => (
+                                  <option key={m.id} value={m.id}>{m.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <label className="block text-[8px] uppercase tracking-wider text-slate-400 font-mono">Parsing Model</label>
+                              <select
+                                value={parseModel}
+                                onChange={(e) => setParseModel(e.target.value)}
+                                className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[10px] text-white focus:outline-none"
+                              >
+                                {availableParseModels.map(m => (
+                                  <option key={m.id} value={m.id}>{m.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between mt-1">
+                            <div className="space-y-1 flex-1 mr-2">
+                              <select
+                                value={samVersion}
+                                onChange={(e) => setSamVersion(e.target.value)}
+                                className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[10px] text-white focus:outline-none"
+                              >
+                                {availableSamVersions.map(m => (
+                                  <option key={m.id} value={m.id}>{m.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <button
+                              onClick={applyModelConfig}
+                              disabled={isConfigApplying || (vlModel === currentActiveVl && parseModel === currentActiveParse && samVersion === currentActiveSam)}
+                              className="bg-purple-600 hover:bg-purple-500 disabled:opacity-30 disabled:cursor-not-allowed text-white px-3 py-1 rounded-lg text-[10px] font-semibold shadow-md cursor-pointer transition-all flex-shrink-0"
+                            >
+                              {isConfigApplying ? "Applying Changes..." : "Apply Configurations"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -928,263 +1200,7 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* Qwen3-VL Description Service Section */}
-                  <div className="mt-8 border-t border-white/5 pt-6">
-                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
-                      <div className="flex items-center space-x-2">
-                        <div className="w-5 h-5 rounded-lg bg-gradient-to-tr from-purple-500 to-indigo-600 flex items-center justify-center font-bold text-white text-[10px]">
-                          {isTechnicalMode ? "Q3" : "AI"}
-                        </div>
-                        <h3 className="text-sm font-semibold text-white">
-                          {isTechnicalMode ? "Qwen3-VL Multimodal Vision Assistant" : "Auto-Identification Assistant"}
-                        </h3>
-                      </div>
-                      
-                      {isTechnicalMode && (
-                        <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-400 font-mono bg-white/5 px-3 py-1.5 rounded-xl border border-white/5">
-                          <div>VL Model: <span className="text-indigo-400">{currentActiveVl.split("/").pop()}</span></div>
-                          <span className="text-slate-600">|</span>
-                          <div>Parser: <span className="text-purple-400">{currentActiveParse.split("/").pop()}</span></div>
-                          <span className="text-slate-600">|</span>
-                          <div>SAM: <span className="text-emerald-400">{currentActiveSam}</span></div>
-                        </div>
-                      )}
-                    </div>
 
-                    <div className="bg-black/30 border border-white/5 rounded-2xl p-4 md:p-6 space-y-4">
-                      {/* Model Configuration Selector for Technical Mode */}
-                      {isTechnicalMode && (
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-white/5 border border-white/5 p-4 rounded-2xl">
-                          <div className="space-y-1.5">
-                            <div className="flex items-center justify-between">
-                              <label className="block text-[10px] uppercase tracking-wider text-slate-400 font-mono">Visual Model (Qwen VL)</label>
-                              <span className="text-[9px] text-slate-500 font-mono">Variant & Size</span>
-                            </div>
-                            <select
-                              value={vlModel}
-                              onChange={(e) => setVlModel(e.target.value)}
-                              className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
-                            >
-                              {availableVlModels.map(m => (
-                                <option key={m.id} value={m.id}>{m.name}</option>
-                              ))}
-                            </select>
-                            <p className="text-[9px] text-slate-500 font-mono">
-                              {availableVlModels.find(m => m.id === vlModel)?.description}
-                            </p>
-                          </div>
-                          
-                          <div className="space-y-1.5">
-                            <div className="flex items-center justify-between">
-                              <label className="block text-[10px] uppercase tracking-wider text-slate-400 font-mono">Parsing Model (Qwen 3.6)</label>
-                              <span className="text-[9px] text-slate-500 font-mono">Variant & Size</span>
-                            </div>
-                            <select
-                              value={parseModel}
-                              onChange={(e) => setParseModel(e.target.value)}
-                              className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
-                            >
-                              {availableParseModels.map(m => (
-                                <option key={m.id} value={m.id}>{m.name}</option>
-                              ))}
-                            </select>
-                            <p className="text-[9px] text-slate-500 font-mono">
-                              {availableParseModels.find(m => m.id === parseModel)?.description}
-                            </p>
-                          </div>
-
-                          <div className="space-y-1.5">
-                            <div className="flex items-center justify-between">
-                              <label className="block text-[10px] uppercase tracking-wider text-slate-400 font-mono">SAM Model Variant</label>
-                              <span className="text-[9px] text-slate-500 font-mono">Version</span>
-                            </div>
-                            <select
-                              value={samVersion}
-                              onChange={(e) => setSamVersion(e.target.value)}
-                              className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
-                            >
-                              {availableSamVersions.map(m => (
-                                <option key={m.id} value={m.id}>{m.name}</option>
-                              ))}
-                            </select>
-                            <p className="text-[9px] text-slate-500 font-mono">
-                              {availableSamVersions.find(m => m.id === samVersion)?.description}
-                            </p>
-                          </div>
-                          
-                          <div className="md:col-span-3 flex justify-end">
-                            <button
-                              onClick={applyModelConfig}
-                              disabled={isConfigApplying || (vlModel === currentActiveVl && parseModel === currentActiveParse && samVersion === currentActiveSam)}
-                              className="bg-purple-600 hover:bg-purple-500 disabled:opacity-30 disabled:cursor-not-allowed text-white px-4 py-2 rounded-xl text-xs font-semibold shadow-md cursor-pointer transition-all"
-                            >
-                              {isConfigApplying ? "Applying Changes..." : "Apply Configurations"}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="flex flex-col md:flex-row space-y-3 md:space-y-0 md:space-x-4 items-end">
-                        <div className="flex-1 space-y-1.5 w-full">
-                          <label className="block text-[10px] uppercase tracking-wider text-slate-500 font-mono">
-                            {isTechnicalMode 
-                              ? "Identify segmentable objects and their visual attributes"
-                              : "Find segmentable objects in this asset"
-                            }
-                          </label>
-                          <input
-                            type="text"
-                            value={qwenPrompt}
-                            onChange={(e) => setQwenPrompt(e.target.value)}
-                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500/50"
-                            placeholder={isTechnicalMode ? "Identify main objects with attributes" : "Find all segmentable objects..."}
-                          />
-                        </div>
-                        <button
-                          onClick={describeAsset}
-                          disabled={describing || !selectedAsset}
-                          className="w-full md:w-auto bg-gradient-to-r from-indigo-500 to-purple-600 hover:opacity-90 active:scale-[0.99] transition-all text-white px-5 py-2.5 rounded-xl text-xs font-semibold shadow-lg shadow-indigo-600/10 flex items-center justify-center space-x-2 disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0 cursor-pointer"
-                        >
-                          {describing ? (
-                            <>
-                              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                              <span>{isTechnicalMode ? "Identifying..." : "Finding..."}</span>
-                            </>
-                          ) : (
-                            <>
-                              <span>{isTechnicalMode ? "👁️ Identify Objects & Attributes" : "🔍 Identify Objects"}</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-
-                      {/* Output Container */}
-                      {(description || detectedObjects.length > 0) && (
-                        <div className="space-y-4">
-                          {isTechnicalMode && description && (
-                            <div className="bg-[#07070F] border border-white/5 rounded-xl p-4 space-y-2">
-                              <div className="flex items-center justify-between border-b border-white/5 pb-2">
-                                <span className="text-[10px] uppercase tracking-wider text-slate-400 font-mono font-bold flex items-center space-x-1.5">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
-                                  <span>Qwen3-VL Response</span>
-                                </span>
-                                <button
-                                  onClick={() => {
-                                    navigator.clipboard.writeText(description);
-                                    alert("Copied to clipboard!");
-                                  }}
-                                  className="text-[10px] text-indigo-400 hover:text-white underline cursor-pointer"
-                                >
-                                  Copy text
-                                </button>
-                              </div>
-                              <p className="text-xs text-slate-300 leading-relaxed font-sans whitespace-pre-wrap">
-                                {description}
-                              </p>
-                            </div>
-                          )}
-                            {detectedObjects.length > 0 && (
-                            <div className="space-y-4">
-                              <div className="text-[10px] uppercase tracking-wider text-slate-400 font-mono font-bold flex items-center space-x-1.5">
-                                <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
-                                <span>
-                                  {isTechnicalMode 
-                                    ? "Select an object or part to segment with SAM3"
-                                    : "Choose an identified object to segment:"
-                                  }
-                                </span>
-                              </div>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {detectedObjects.map((obj) => {
-                                  const isMainActive = prompt === obj.prompt && promptMode === "text";
-                                  return (
-                                    <div
-                                      key={obj.name}
-                                      className="bg-white/5 border border-white/10 hover:border-white/20 rounded-2xl p-4 transition-all duration-300 backdrop-blur-md space-y-3"
-                                    >
-                                      {/* Main Object Header */}
-                                      <div className="flex items-start justify-between">
-                                        <div>
-                                          {isTechnicalMode && (
-                                            <span className="text-[10px] text-indigo-400 font-mono font-bold uppercase tracking-widest">
-                                              Object
-                                            </span>
-                                          )}
-                                          <h4 className="text-sm font-bold text-white capitalize">
-                                            {obj.name}
-                                          </h4>
-                                          {isTechnicalMode && obj.attributes && obj.attributes.length > 0 && (
-                                            <p className="text-[10px] text-slate-400 italic">
-                                              Attributes: {obj.attributes.join(", ")}
-                                            </p>
-                                          )}
-                                        </div>
-                                        <button
-                                          onClick={() => segmentObject(obj.prompt)}
-                                          className={`px-3 py-1.5 rounded-xl text-[11px] font-semibold transition-all active:scale-[0.98] cursor-pointer ${
-                                            isMainActive
-                                              ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-600/30 border border-indigo-400"
-                                              : "bg-white/10 hover:bg-white/15 text-white border border-white/10 hover:border-white/25"
-                                          }`}
-                                        >
-                                          {isMainActive ? "✓ Active" : (isTechnicalMode ? "🔍 Segment Object" : "Segment")}
-                                        </button>
-                                      </div>
-
-                                      {/* Sub Objects / Parts */}
-                                      {obj.sub_objects && obj.sub_objects.length > 0 && (
-                                        <div className="border-t border-white/5 pt-2 space-y-1.5">
-                                          {isTechnicalMode && (
-                                            <span className="text-[9px] uppercase text-slate-500 font-mono block">
-                                              Sub-objects & Parts
-                                            </span>
-                                          )}
-                                          <div className="flex flex-wrap gap-2">
-                                            {obj.sub_objects.map((sub) => {
-                                              const isSubActive = prompt === sub.prompt && promptMode === "text";
-                                              return (
-                                                <button
-                                                  key={sub.name}
-                                                  onClick={() => segmentObject(sub.prompt)}
-                                                  className={`flex items-center space-x-1 px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all active:scale-[0.98] cursor-pointer ${
-                                                    isSubActive
-                                                      ? "bg-purple-600 text-white shadow-sm border border-purple-400"
-                                                      : "bg-purple-950/20 hover:bg-purple-900/30 text-purple-200 border border-purple-500/20 hover:border-purple-500/40"
-                                                  }`}
-                                                  title={`Prompt: ${sub.prompt}`}
-                                                >
-                                                  <span>{isTechnicalMode ? "⚙️" : "•"}</span>
-                                                  <span>{sub.name}</span>
-                                                  {isTechnicalMode && sub.attributes && sub.attributes.length > 0 && (
-                                                    <span className="text-[8px] text-purple-400/80 pl-1">
-                                                      ({sub.attributes.join(", ")})
-                                                    </span>
-                                                  )}
-                                                </button>
-                                              );
-                                            })}
-                                          </div>
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {!description && detectedObjects.length === 0 && !describing && (
-                        <div className="text-center py-6 text-slate-600 text-xs font-mono border border-dashed border-white/5 rounded-xl bg-black/10">
-                          {isTechnicalMode 
-                            ? "Select an asset above and click \"Identify Objects & Attributes\" to retrieve segmentable parts."
-                            : "Select an asset from the gallery and click \"Identify Objects\" to automatically find segmentable parts."
-                          }
-                        </div>
-                      )}
-                    </div>
-                  </div>
 
                 </div>
               </div>

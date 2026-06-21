@@ -382,7 +382,7 @@ def get_gif_frames_dir(gif_path: str) -> str:
     return target_dir
 
 @app.post("/api/inference")
-def run_inference(req: InferenceRequest):
+async def run_inference(req: InferenceRequest):
     session_id = str(uuid.uuid4())
     device = model_manager.device
     
@@ -408,10 +408,14 @@ def run_inference(req: InferenceRequest):
             
             save_mask_overlay(input_path, masks, boxes, scores, output_path, req.prompt)
             
+            # Crop and classify the segmented objects
+            crops = await classify_and_crop_segmented_objects(input_path, masks, boxes, session_id)
+            
             return {
                 "success": True,
                 "output_url": f"/api/results/interactive/{output_filename}",
-                "session_id": session_id
+                "session_id": session_id,
+                "crops": crops
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Image inference failed: {str(e)}")
@@ -509,7 +513,8 @@ def run_inference(req: InferenceRequest):
             return {
                 "success": True,
                 "output_url": f"/api/results/interactive/{output_filename}",
-                "session_id": session_id
+                "session_id": session_id,
+                "crops": []
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Video tracking failed: {str(e)}")
@@ -517,7 +522,7 @@ def run_inference(req: InferenceRequest):
         raise HTTPException(status_code=400, detail="Invalid asset type")
 
 @app.post("/api/interactive-click")
-def run_interactive_click(req: ClickInferenceRequest):
+async def run_interactive_click(req: ClickInferenceRequest):
     session_id = req.session_id or str(uuid.uuid4())
     device = model_manager.device
     
@@ -585,16 +590,42 @@ def run_interactive_click(req: ClickInferenceRequest):
         
         save_mask_overlay(input_path, masks_tensor, boxes_tensor, scores_tensor, output_path, req.prompt or "object")
         
+        crops = await classify_and_crop_segmented_objects(input_path, masks_tensor, boxes_tensor, session_id)
+        
         return {
             "success": True,
             "output_url": f"/api/results/interactive/{output_filename}",
-            "session_id": session_id
+            "session_id": session_id,
+            "crops": crops
         }
     except Exception as e:
         # Clear caching if it failed
         if session_id in interactive_sessions:
             del interactive_sessions[session_id]
         raise HTTPException(status_code=500, detail=f"Click inference failed: {str(e)}")
+
+class SubObjectParser(BaseModel):
+    name: str
+    attributes: List[str] = []
+
+class ObjectParser(BaseModel):
+    name: str
+    attributes: List[str] = []
+    sub_objects: List[SubObjectParser] = []
+
+class BreakdownParser(BaseModel):
+    objects: List[ObjectParser]
+
+class ClassificationCandidate(BaseModel):
+    class_name: str
+    confidence: float
+
+class ClassificationBreakdown(BaseModel):
+    candidates: List[ClassificationCandidate]
+
+class AssetDescribeBreakdown(BaseModel):
+    objects: List[ObjectParser]
+    candidates: List[ClassificationCandidate] = []
 
 class DescribeRequest(BaseModel):
     asset_path: str  # e.g., "images/truck.jpg" or "videos/bedroom.mp4"
@@ -624,11 +655,12 @@ def parse_pydantic_breakdown(text: str, fallback_text: Optional[str] = None) -> 
     
     if json_block:
         try:
-            data = json.loads(json_block)
-            raw_objects = data.get("objects", [])
-            for obj in raw_objects:
-                name = obj.get("name", "").strip()
-                attrs = [a.strip() for a in obj.get("attributes", []) if a.strip()]
+            # Parse and validate using Pydantic models
+            parsed_data = BreakdownParser.model_validate_json(json_block)
+            
+            for obj in parsed_data.objects:
+                name = obj.name.strip()
+                attrs = [a.strip() for a in obj.attributes if a.strip()]
                 if not name:
                     continue
                     
@@ -636,9 +668,9 @@ def parse_pydantic_breakdown(text: str, fallback_text: Optional[str] = None) -> 
                 main_prompt = f"{attr_str} {name}".strip()
                 
                 sub_objects_list = []
-                for sub in obj.get("sub_objects", []):
-                    sub_name = sub.get("name", "").strip()
-                    sub_attrs = [sa.strip() for sa in sub.get("attributes", []) if sa.strip()]
+                for sub in obj.sub_objects:
+                    sub_name = sub.name.strip()
+                    sub_attrs = [sa.strip() for sa in sub.attributes if sa.strip()]
                     if not sub_name:
                         continue
                         
@@ -703,9 +735,253 @@ async def get_active_model(base_url: str, default_model: str) -> str:
         print(f"Failed to fetch active model from {base_url}: {e}. Using fallback {default_model}")
     return default_model
 
+async def classify_crop(marked_filename: str) -> List[dict]:
+    import httpx
+    import re
+    import json
+    
+    container_file_path = f"/app/results/interactive/{marked_filename}"
+    media_payload = {"image_url": {"url": f"file://{container_file_path}"}}
+    
+    vl_prompt = (
+        "Identify the object enclosed within the red bounding box in this image. "
+        "Describe the object and list multiple likely category names/ontology terms for it, "
+        "along with your estimated confidence level (0.0 to 1.0) for each candidate. "
+        "Explain your reasoning for the categories."
+    )
+    
+    active_vl_model = await get_active_model("http://qwen3-vl:8000", os.getenv("VL_MODEL", "Qwen/Qwen3-VL-8B-Thinking"))
+    vl_payload = {
+        "model": active_vl_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": vl_prompt},
+                    {"type": "image_url", **media_payload}
+                ]
+            }
+        ],
+        "max_tokens": 500,
+        "temperature": 0.1
+    }
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer EMPTY"
+    }
+    
+    vl_description = ""
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post("http://qwen3-vl:8000/v1/chat/completions", json=vl_payload, headers=headers)
+            if response.status_code == 200:
+                result = response.json()
+                vl_description = result["choices"][0]["message"]["content"].strip()
+                if "</think>" in vl_description:
+                    vl_description = vl_description.split("</think>")[-1].strip()
+                elif "</thinking>" in vl_description:
+                    vl_description = vl_description.split("</thinking>")[-1].strip()
+            else:
+                print(f"Qwen-VL request failed in classify_crop: {response.text}")
+    except Exception as e:
+        print(f"Qwen-VL query failed in classify_crop: {e}")
+        
+    if not vl_description:
+        return {"description": "No description available.", "candidates": [{"class_name": "unknown object", "confidence": 1.0}]}
+        
+    parser_prompt = (
+        "Extract all likely candidate object classes and their confidence scores from the text description below.\n\n"
+        "Text:\n"
+        f"{vl_description}\n\n"
+        "Format your response strictly as a valid JSON object matching this schema (do NOT output any other text or reasoning):\n"
+        "{\n"
+        '  "candidates": [\n'
+        "    {\n"
+        '      "class_name": "[concise category name, e.g. pickup truck]",\n'
+        '      "confidence": [float between 0.0 and 1.0]\n'
+        "    }\n"
+        "  ]\n"
+        "}"
+    )
+    
+    active_parse_model = await get_active_model("http://qwen3-6:8000", os.getenv("PARSE_MODEL", "Qwen/Qwen2.5-0.5B-Instruct"))
+    parser_payload = {
+        "model": active_parse_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": parser_prompt
+            }
+        ],
+        "max_tokens": 500,
+        "temperature": 0.1
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post("http://qwen3-6:8000/v1/chat/completions", json=parser_payload, headers=headers)
+            if response.status_code == 200:
+                result = response.json()
+                content = result["choices"][0]["message"]["content"].strip()
+                if "</think>" in content:
+                    content = content.split("</think>")[-1].strip()
+                    
+                json_block = ""
+                match = re.search(r'\{.*\}', content, re.DOTALL)
+                if match:
+                    json_block = match.group(0)
+                    
+                if json_block:
+                    try:
+                        # Clean single-line and multi-line comments
+                        lines = []
+                        for line in json_block.splitlines():
+                            stripped = line.strip()
+                            if stripped.startswith("//") or stripped.startswith("/*"):
+                                continue
+                            if "//" in line:
+                                parts = line.split("//", 1)
+                                if parts[0].count('"') % 2 == 0:
+                                    line = parts[0]
+                            lines.append(line)
+                        cleaned_json_block = "\n".join(lines)
+                        
+                        # Clean trailing commas
+                        cleaned_json_block = re.sub(r',\s*\]', ']', cleaned_json_block)
+                        cleaned_json_block = re.sub(r',\s*\}', '}', cleaned_json_block)
+                        
+                        parsed_data = ClassificationBreakdown.model_validate_json(cleaned_json_block)
+                        sorted_candidates = sorted(parsed_data.candidates, key=lambda x: x.confidence, reverse=True)
+                        return {
+                            "description": vl_description,
+                            "candidates": [{"class_name": c.class_name.strip("`'\" \n\t."), "confidence": c.confidence} for c in sorted_candidates]
+                        }
+                    except Exception as parse_err:
+                        print(f"Pydantic parsing failed in classify_crop: {parse_err}. Trying manual extraction...", flush=True)
+                        candidates_list = []
+                        try:
+                            candidate_matches = re.findall(r'"class_name":\s*"([^"]+)"\s*,\s*"confidence":\s*([0-9.]+)', json_block)
+                            if not candidate_matches:
+                                candidate_matches = re.findall(r'"confidence":\s*([0-9.]+)\s*,\s*"class_name":\s*"([^"]+)"', json_block)
+                                candidate_matches = [(name, float(conf)) for conf, name in candidate_matches]
+                            else:
+                                candidate_matches = [(name, float(conf)) for name, conf in candidate_matches]
+                            
+                            for name, conf in candidate_matches:
+                                candidates_list.append({
+                                    "class_name": name.strip("`'\" \n\t."),
+                                    "confidence": conf
+                                })
+                            candidates_list = sorted(candidates_list, key=lambda x: x["confidence"], reverse=True)
+                        except Exception as fallback_err:
+                            print(f"Manual fallback extraction in classify_crop also failed: {fallback_err}", flush=True)
+                        
+                        if candidates_list:
+                            return {
+                                "description": vl_description,
+                                "candidates": candidates_list
+                            }
+    except Exception as e:
+        print(f"Parser model failed to structure candidates list: {e}")
+        
+    return {"description": vl_description or "Failed to parse description.", "candidates": [{"class_name": "unknown object", "confidence": 1.0}]}
+
+async def classify_and_crop_segmented_objects(image_path_or_array, masks, boxes, session_id: str):
+    from PIL import ImageDraw
+    if isinstance(masks, torch.Tensor):
+        masks = masks.cpu().float().numpy()
+    if isinstance(boxes, torch.Tensor):
+        boxes = boxes.cpu().float().numpy()
+
+    if masks is None or len(masks) == 0:
+        return []
+
+    # Load original image
+    if isinstance(image_path_or_array, str):
+        img = Image.open(image_path_or_array).convert("RGBA")
+    else:
+        img = Image.fromarray(image_path_or_array).convert("RGBA")
+
+    w, h = img.size
+    crops_list = []
+
+    for idx, mask in enumerate(masks):
+        if mask.ndim == 3:
+            mask = mask[0]
+        mask_bool = mask.astype(bool)
+        
+        # Resize mask if it does not match the image dimensions
+        if mask_bool.shape != (h, w):
+            mask_pil = Image.fromarray((mask_bool * 255).astype(np.uint8)).resize((w, h), Image.Resampling.NEAREST)
+            mask_bool_resized = np.array(mask_pil) > 127
+        else:
+            mask_bool_resized = mask_bool
+
+        # Make the background white where mask is false
+        img_np = np.array(img)
+        img_np[~mask_bool_resized, 3] = 0
+        masked_img = Image.fromarray(img_np)
+
+        bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        cropped_full = Image.alpha_composite(bg, masked_img).convert("RGB")
+
+        # Bounding box coordinates
+        x1, y1, x2, y2 = 0, 0, w, h
+        if boxes is not None and idx < len(boxes):
+            box = boxes[idx]
+            x1, y1, x2, y2 = map(int, box)
+        else:
+            # compute from mask
+            y_indices, x_indices = np.where(mask_bool_resized)
+            if len(x_indices) > 0 and len(y_indices) > 0:
+                x1, x2 = x_indices.min(), x_indices.max()
+                y1, y2 = y_indices.min(), y_indices.max()
+
+        x1 = max(0, min(x1, w - 1))
+        y1 = max(0, min(y1, h - 1))
+        x2 = max(0, min(x2, w - 1))
+        y2 = max(0, min(y2, h - 1))
+
+        if x2 > x1 and y2 > y1:
+            crop_img = cropped_full.crop((x1, y1, x2, y2))
+        else:
+            crop_img = cropped_full
+
+        # Save crop image under results directory
+        crop_filename = f"crop_{session_id}_{idx}.png"
+        crop_path = os.path.join(workspace_dir, "results/interactive", crop_filename)
+        crop_img.save(crop_path, "PNG")
+
+        # Create a marked full image (original full image with a red bounding box) to give context to Qwen-VL
+        marked_img = img.convert("RGB")
+        draw_marked = ImageDraw.Draw(marked_img)
+        draw_marked.rectangle([x1, y1, x2, y2], outline=(255, 0, 0), width=5)
+        
+        # Save marked full image
+        marked_filename = f"marked_{session_id}_{idx}.png"
+        marked_path = os.path.join(workspace_dir, "results/interactive", marked_filename)
+        marked_img.save(marked_path, "PNG")
+
+        # Classify using Qwen VL + Qwen 3.6
+        classification_result = await classify_crop(marked_filename)
+        description = classification_result["description"]
+        candidates = classification_result["candidates"]
+        class_name = candidates[0]["class_name"] if len(candidates) > 0 else "unknown object"
+
+        crops_list.append({
+            "crop_url": f"/api/results/interactive/{crop_filename}",
+            "class_name": class_name,
+            "description": description,
+            "candidates": candidates
+        })
+
+    return crops_list
+
 @app.post("/api/describe")
 async def describe_asset(req: DescribeRequest):
     import httpx
+    import re
     
     input_path = os.path.join(workspace_dir, "sam3/assets", req.asset_path)
     if not os.path.exists(input_path):
@@ -729,7 +1005,9 @@ async def describe_asset(req: DescribeRequest):
     if req.want_breakdown:
         # Step 1: Query Qwen-VL to get a detailed visual description
         vl_prompt = (
-            "Describe all major segmentable objects visible in this asset in detail, including their visual attributes (like color, shape, relative position, or texture) and their key sub-objects/parts (with their attributes). Do NOT limit your description to only one object; list all major elements."
+            "Identify and describe ALL possible objects present in this image/video, including the main object and all secondary or background objects. "
+            "For each object, output the object name, its key parts/components, and the attributes (like color, shape, relative position, or texture) of the object and its parts. "
+            "Be extremely detailed and comprehensive. Do NOT focus only on the main object; list and describe every single object visible in the asset along with its parts and attributes."
         )
         active_vl_model = await get_active_model("http://qwen3-vl:8000", os.getenv("VL_MODEL", "Qwen/Qwen3-VL-8B-Thinking"))
         vl_payload = {
@@ -765,13 +1043,16 @@ async def describe_asset(req: DescribeRequest):
             raise HTTPException(status_code=503, detail=f"Could not connect to Qwen3-VL service: {str(exc)}")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Qwen-VL query failed: {str(e)}")
-
+ 
         # Step 2: Query Qwen3.6 to parse the description into structured JSON
         parser_prompt = (
-            "You are a precise data parsing assistant. Extract all segmentable objects, their visual attributes, and their sub-objects/parts (with their attributes) from the visual description below.\n\n"
+            "You are a precise data parsing assistant. Extract all segmentable objects, their visual attributes, "
+            "their sub-objects/parts (with their attributes), AND classification candidate categories with estimated confidence levels (0.0 to 1.0) "
+            "for ALL possible objects present in the image/video (including the main object, background objects, secondary objects, and key parts/components) "
+            "from the visual description below.\n\n"
             "Visual Description:\n"
             f"{vl_description}\n\n"
-            "Format your response strictly as a valid JSON object matching the schema below (do NOT output any other text, reasoning, intro, notes, or markdown formatting blocks outside the JSON):\n"
+            "Format your response strictly as a valid JSON object matching this schema. Do NOT include any comments (such as // or /*) or placeholders in your output:\n"
             "{\n"
             '  "objects": [\n'
             "    {\n"
@@ -784,7 +1065,13 @@ async def describe_asset(req: DescribeRequest):
             "        }\n"
             "      ]\n"
             "    }\n"
-            "  ]\n"
+            '  ],\n'
+            '  "candidates": [\n'
+            "    {\n"
+            '      "class_name": "[name of any possible object present in the image/video, e.g. pickup truck, wheel, tree, person, canopy, cab, wall, window, exhaust, graffiti]",\n'
+            '      "confidence": [float between 0.0 and 1.0]\n'
+            "    }\n"
+            '  ]\n'
             "}"
         )
         
@@ -810,11 +1097,114 @@ async def describe_asset(req: DescribeRequest):
                 result = response.json()
                 raw_parser_text = result["choices"][0]["message"]["content"]
                 
-                objects_parsed = parse_pydantic_breakdown(raw_parser_text, vl_description)
+                json_block = ""
+                if "</think>" in raw_parser_text:
+                    raw_parser_text = raw_parser_text.split("</think>", 1)[1]
+                elif "</thinking>" in raw_parser_text:
+                    raw_parser_text = raw_parser_text.split("</thinking>", 1)[1]
+                else:
+                    raw_parser_text = re.sub(r'<thinking>.*?</thinking>', '', raw_parser_text, flags=re.DOTALL)
+                    raw_parser_text = re.sub(r'<think>.*?</think>', '', raw_parser_text, flags=re.DOTALL)
+                
+                match = re.search(r'\{.*\}', raw_parser_text, re.DOTALL)
+                if match:
+                    json_block = match.group(0)
+                
+                objects_parsed = []
+                candidates_parsed = []
+                if json_block:
+                    try:
+                        # Clean single-line and multi-line comments
+                        lines = []
+                        for line in json_block.splitlines():
+                            stripped = line.strip()
+                            if stripped.startswith("//") or stripped.startswith("/*"):
+                                continue
+                            if "//" in line:
+                                parts = line.split("//", 1)
+                                if parts[0].count('"') % 2 == 0:
+                                    line = parts[0]
+                            lines.append(line)
+                        cleaned_json_block = "\n".join(lines)
+                        
+                        # Clean trailing commas
+                        cleaned_json_block = re.sub(r',\s*\]', ']', cleaned_json_block)
+                        cleaned_json_block = re.sub(r',\s*\}', '}', cleaned_json_block)
+                        
+                        parsed_data = AssetDescribeBreakdown.model_validate_json(cleaned_json_block)
+                        for obj in parsed_data.objects:
+                            name = obj.name.strip()
+                            attrs = [a.strip() for a in obj.attributes if a.strip()]
+                            if not name:
+                                continue
+                            attr_str = " ".join(attrs)
+                            main_prompt = f"{attr_str} {name}".strip()
+                            
+                            sub_objects_list = []
+                            for sub in obj.sub_objects:
+                                sub_name = sub.name.strip()
+                                sub_attrs = [sa.strip() for sa in sub.attributes if sa.strip()]
+                                if not sub_name:
+                                    continue
+                                sub_attr_str = " ".join(sub_attrs)
+                                sub_prompt = f"{sub_attr_str} {sub_name} of {main_prompt}".strip()
+                                
+                                sub_objects_list.append({
+                                    "name": sub_name,
+                                    "prompt": sub_prompt,
+                                    "attributes": sub_attrs
+                                })
+                                
+                            objects_parsed.append({
+                                "name": name,
+                                "prompt": main_prompt,
+                                "attributes": attrs,
+                                "sub_objects": sub_objects_list
+                            })
+                        
+                        sorted_candidates = sorted(parsed_data.candidates, key=lambda x: x.confidence, reverse=True)
+                        candidates_parsed = [{"class_name": c.class_name.strip("`'\" \n\t."), "confidence": c.confidence} for c in sorted_candidates]
+                    except Exception as e:
+                        print(f"Pydantic parsing failed for asset describe breakdown: {e}", flush=True)
+                        print(f"Raw parser text was:\n{raw_parser_text}", flush=True)
+                        print(f"Extracted json_block was:\n{json_block}", flush=True)
+                        
+                        # Fallback parsing using simple regex
+                        try:
+                            candidate_matches = re.findall(r'"class_name":\s*"([^"]+)"\s*,\s*"confidence":\s*([0-9.]+)', json_block)
+                            if not candidate_matches:
+                                candidate_matches = re.findall(r'"confidence":\s*([0-9.]+)\s*,\s*"class_name":\s*"([^"]+)"', json_block)
+                                candidate_matches = [(name, float(conf)) for conf, name in candidate_matches]
+                            else:
+                                candidate_matches = [(name, float(conf)) for name, conf in candidate_matches]
+                                
+                            for name, conf in candidate_matches:
+                                candidates_parsed.append({
+                                    "class_name": name.strip("`'\" \n\t."),
+                                    "confidence": conf
+                                })
+                            
+                            candidates_parsed = sorted(candidates_parsed, key=lambda x: x["confidence"], reverse=True)
+                            
+                            # Also manually extract objects if we can
+                            object_names = re.findall(r'"name":\s*"([^"]+)"', json_block)
+                            for name in object_names:
+                                name_clean = name.strip("`'\" \n\t.")
+                                if name_clean and not any(o["name"].lower() == name_clean.lower() for o in objects_parsed):
+                                    objects_parsed.append({
+                                        "name": name_clean,
+                                        "prompt": name_clean,
+                                        "attributes": [],
+                                        "sub_objects": []
+                                    })
+                        except Exception as fallback_err:
+                            print(f"Manual fallback extraction in describe_asset also failed: {fallback_err}", flush=True)
+                
                 return {
                     "success": True,
-                    "description": "",
-                    "objects": objects_parsed
+                    "description": vl_description,
+                    "objects": objects_parsed,
+                    "candidates": candidates_parsed
                 }
         except httpx.RequestError as exc:
             raise HTTPException(status_code=503, detail=f"Could not connect to Qwen3.6 service: {str(exc)}")
