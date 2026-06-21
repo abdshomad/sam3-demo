@@ -123,7 +123,14 @@ export default function Home() {
   const [assetType, setAssetType] = useState<"image" | "video">("image");
   const [prompt, setPrompt] = useState<string>("truck");
   const [promptMode, setPromptMode] = useState<"text" | "click">("text");
-  const [clicks, setClicks] = useState<ClickPoint[]>([]);
+  const [clicks, setClicksState] = useState<ClickPoint[]>([]);
+  const clicksRef = useRef<ClickPoint[]>([]);
+
+  const setClicks = (newClicks: ClickPoint[]) => {
+    setClicksState(newClicks);
+    clicksRef.current = newClicks;
+  };
+
   const [clickLabel, setClickLabel] = useState<boolean>(true); // true = positive, false = negative
   
   const [loading, setLoading] = useState<boolean>(false);
@@ -270,13 +277,37 @@ export default function Home() {
   };
 
   const handleImageClick = (e: React.MouseEvent<HTMLImageElement>) => {
-    if (promptMode !== "click" || !imageRef.current) return;
+    if (!imageRef.current) return;
     
+    if (promptMode !== "click") {
+      setPromptMode("click");
+    }
+
+    if (e.detail > 1) {
+      return;
+    }
+
     const rect = imageRef.current.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
     
-    setClicks([...clicks, { x, y, is_positive: clickLabel }]);
+    const is_positive = e.shiftKey ? false : clickLabel;
+    const newPoint = { x, y, is_positive };
+    const updatedClicks = [...clicksRef.current, newPoint];
+
+    setClicks(updatedClicks);
+
+    // Run inference for every click point, including the first one
+    runClickInference(updatedClicks);
+  };
+
+  const handleImageDoubleClick = (e: React.MouseEvent<HTMLImageElement>) => {
+    if (!imageRef.current) return;
+    // The first click of the double-click has already triggered inference.
+    // We only trigger here as a safety measure if not already loading.
+    if (clicksRef.current.length === 1 && !loading) {
+      runClickInference(clicksRef.current);
+    }
   };
 
   const clearClicks = () => {
@@ -312,8 +343,9 @@ export default function Home() {
     }
   };
 
-  const runClickInference = async () => {
-    if (clicks.length === 0) {
+  const runClickInference = async (customClicks?: ClickPoint[]) => {
+    const clicksToUse = customClicks || clicksRef.current;
+    if (clicksToUse.length === 0) {
       alert("Please click on the image to add positive/negative prompts first.");
       return;
     }
@@ -325,7 +357,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           asset_path: selectedAsset,
-          clicks: clicks,
+          clicks: clicksToUse,
           prompt: prompt || undefined,
           session_id: sessionId || undefined,
         }),
@@ -697,6 +729,7 @@ export default function Home() {
                             src={`/api/original/${selectedAsset}`}
                             alt="Original Asset"
                             onClick={handleImageClick}
+                            onDoubleClick={handleImageDoubleClick}
                             className="max-h-[350px] w-auto object-contain select-none"
                           />
                           {/* Dot Overlays for click prompts */}
@@ -839,7 +872,7 @@ export default function Home() {
                           </div>
 
                           <button
-                            onClick={runClickInference}
+                            onClick={() => runClickInference()}
                             disabled={loading || clicks.length === 0}
                             className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 text-white py-2 rounded-xl text-xs font-semibold shadow-lg hover:opacity-90 active:scale-[0.99] transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
                           >

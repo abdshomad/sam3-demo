@@ -94,7 +94,7 @@ def main():
         # We try to match 'truck' or 'pickup truck' or 'white pickup truck'
         truck_card = None
         for object_name in ["truck", "pickup truck", "white pickup truck", "white truck", "vehicle"]:
-            locator = page.locator("div", has=page.locator("h4", has_text=object_name)).first
+            locator = page.locator("div.rounded-2xl", has=page.locator("h4", has_text=object_name)).first
             if locator.is_visible():
                 truck_card = locator
                 print(f"Matched object card with label: '{object_name}'")
@@ -103,7 +103,7 @@ def main():
         if truck_card is None:
             # Fallback to the first object card if none of the names matched
             print("Fallback: Using the first available object card.")
-            truck_card = page.locator("div", has=page.locator("h4")).first
+            truck_card = page.locator("div.rounded-2xl", has=page.locator("h4")).first
             
         segment_btn = truck_card.locator("button", has_text="Segment")
         print("Triggering segmentation...")
