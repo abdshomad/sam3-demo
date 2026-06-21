@@ -48,6 +48,8 @@ export default function Home() {
   
   // Tour State
   const [tourStep, setTourStep] = useState<number | null>(null);
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState<boolean>(true);
+  const isSidebarOpen = isSidebarExpanded || tourStep === 1;
 
   const imageRef = useRef<HTMLImageElement>(null);
 
@@ -257,98 +259,161 @@ export default function Home() {
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
             
             {/* Left sidebar - configurations */}
-            <div className="lg:col-span-3 space-y-6">
+            <div className={`transition-all duration-300 ${isSidebarOpen ? "lg:col-span-3" : "lg:col-span-1 lg:max-w-[80px]"} space-y-6`}>
               
               {/* Card - Select Input Asset */}
-              <div className={`bg-[#0C0C16] border border-white/5 rounded-2xl p-4 shadow-xl backdrop-blur-md transition-all duration-300 ${
+              <div className={`bg-[#0C0C16] border border-white/5 rounded-2xl ${
+                isSidebarOpen ? "p-4" : "p-3"
+              } shadow-xl backdrop-blur-md transition-all duration-300 ${
                 tourStep === 1 ? "ring-4 ring-indigo-500 ring-offset-2 ring-offset-[#07070F] z-50 relative bg-[#121225]" : ""
               }`}>
-                <h2 className="text-xs font-semibold text-slate-200 mb-4 flex items-center space-x-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
-                  <span>Select Test Asset</span>
-                </h2>
-                                {assets ? (
-                  <div className="space-y-5">
-                    <div>
-                      <label className="block text-[10px] uppercase tracking-wider text-slate-500 font-mono mb-2">Images</label>
-                      <div className="grid grid-cols-3 gap-2 max-h-[250px] overflow-y-auto pr-1">
-                        {assets.originals.images.map((img) => (
-                          <button
-                            key={img}
-                            onClick={() => handleAssetChange(img)}
-                            title={img.split("/").pop()}
-                            className={`group relative aspect-video rounded-xl overflow-hidden border bg-black/20 transition-all cursor-pointer ${
-                              selectedAsset === img
-                                ? "border-indigo-500 ring-2 ring-indigo-500/20 shadow-lg shadow-indigo-500/10"
-                                : "border-white/5 hover:border-white/10"
-                            }`}
-                          >
-                            <img
-                              src={`/api/original/${img}`}
-                              alt={img}
-                              className="w-full h-full object-cover group-hover:scale-110 transition-all duration-300"
-                              loading="lazy"
-                            />
-                          </button>
-                        ))}
-                      </div>
+                {isSidebarOpen ? (
+                  <>
+                    <div className="flex items-center justify-between mb-4 pb-2 border-b border-white/5">
+                      <h2 className="text-xs font-semibold text-slate-200 flex items-center space-x-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                        <span>Select Test Asset</span>
+                      </h2>
+                      {tourStep !== 1 && (
+                        <button
+                          onClick={() => setIsSidebarExpanded(false)}
+                          className="p-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white transition-all cursor-pointer border border-white/5 flex items-center justify-center"
+                          title="Collapse Sidebar"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                          </svg>
+                        </button>
+                      )}
                     </div>
-                    
-                    <div>
-                      <label className="block text-[10px] uppercase tracking-wider text-slate-500 font-mono mb-2">Videos & GIFs</label>
-                      <div className="grid grid-cols-3 gap-2 max-h-[250px] overflow-y-auto pr-1">
-                        {assets.originals.videos.map((vid) => {
-                          const isGif = vid.toLowerCase().endsWith(".gif");
-                          const isFrameFolder = vid.includes("0001");
-                          const isMp4 = vid.toLowerCase().endsWith(".mp4");
-                          
-                          return (
-                            <button
-                              key={vid}
-                              onClick={() => handleAssetChange(vid)}
-                              title={vid.split("/").pop()}
-                              className={`group relative aspect-video rounded-xl overflow-hidden border bg-black/20 transition-all cursor-pointer ${
-                                selectedAsset === vid
-                                  ? "border-indigo-500 ring-2 ring-indigo-500/20 shadow-lg shadow-indigo-500/10"
-                                  : "border-white/5 hover:border-white/10"
-                              }`}
-                            >
-                              {isGif ? (
+                    {assets ? (
+                      <div className="space-y-5">
+                        <div>
+                          <label className="block text-[10px] uppercase tracking-wider text-slate-500 font-mono mb-2">Images</label>
+                          <div className="grid grid-cols-1 gap-2 max-h-[250px] overflow-y-auto pr-1">
+                            {assets.originals.images.map((img) => (
+                              <button
+                                key={img}
+                                onClick={() => handleAssetChange(img)}
+                                title={img.split("/").pop()}
+                                className={`group relative aspect-video rounded-xl overflow-hidden border bg-black/20 transition-all cursor-pointer ${
+                                  selectedAsset === img
+                                    ? "border-indigo-500 ring-2 ring-indigo-500/20 shadow-lg shadow-indigo-500/10"
+                                    : "border-white/5 hover:border-white/10"
+                                }`}
+                              >
                                 <img
-                                  src={`/api/original/${vid}`}
-                                  alt={vid}
+                                  src={`/api/original/${img}`}
+                                  alt={img}
                                   className="w-full h-full object-cover group-hover:scale-110 transition-all duration-300"
                                   loading="lazy"
                                 />
-                              ) : isFrameFolder ? (
-                                <img
-                                  src={`/api/original/${vid}/00000.jpg`}
-                                  alt={vid}
-                                  className="w-full h-full object-cover group-hover:scale-110 transition-all duration-300"
-                                  loading="lazy"
-                                />
-                              ) : isMp4 ? (
-                                <video
-                                  src={`/api/original/${vid}`}
-                                  muted
-                                  loop
-                                  playsInline
-                                  className="w-full h-full object-cover group-hover:scale-110 transition-all duration-300 pointer-events-none"
-                                />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center font-mono text-[9px] text-slate-500">
-                                  🎥
-                                </div>
-                              )}
-                            </button>
-                          );
-                        })}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        
+                        <div>
+                          <label className="block text-[10px] uppercase tracking-wider text-slate-500 font-mono mb-2">Videos & GIFs</label>
+                          <div className="grid grid-cols-1 gap-2 max-h-[250px] overflow-y-auto pr-1">
+                            {assets.originals.videos.map((vid) => {
+                              const isGif = vid.toLowerCase().endsWith(".gif");
+                              const isFrameFolder = vid.includes("0001");
+                              const isMp4 = vid.toLowerCase().endsWith(".mp4");
+                              
+                              return (
+                                <button
+                                  key={vid}
+                                  onClick={() => handleAssetChange(vid)}
+                                  title={vid.split("/").pop()}
+                                  className={`group relative aspect-video rounded-xl overflow-hidden border bg-black/20 transition-all cursor-pointer ${
+                                    selectedAsset === vid
+                                      ? "border-indigo-500 ring-2 ring-indigo-500/20 shadow-lg shadow-indigo-500/10"
+                                      : "border-white/5 hover:border-white/10"
+                                  }`}
+                                >
+                                  {isGif ? (
+                                    <img
+                                      src={`/api/original/${vid}`}
+                                      alt={vid}
+                                      className="w-full h-full object-cover group-hover:scale-110 transition-all duration-300"
+                                      loading="lazy"
+                                    />
+                                  ) : isFrameFolder ? (
+                                    <img
+                                      src={`/api/original/${vid}/00000.jpg`}
+                                      alt={vid}
+                                      className="w-full h-full object-cover group-hover:scale-110 transition-all duration-300"
+                                      loading="lazy"
+                                    />
+                                  ) : isMp4 ? (
+                                    <video
+                                      src={`/api/original/${vid}`}
+                                      muted
+                                      loop
+                                      playsInline
+                                      className="w-full h-full object-cover group-hover:scale-110 transition-all duration-300 pointer-events-none"
+                                    />
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center font-mono text-[9px] text-slate-500">
+                                      🎥
+                                    </div>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </div>
+                    ) : (
+                      <div className="py-8 flex justify-center">
+                        <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                      </div>
+                    )}
+                  </>
                 ) : (
-                  <div className="py-8 flex justify-center">
-                    <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                  <div className="flex flex-col items-center space-y-4">
+                    <button
+                      onClick={() => setIsSidebarExpanded(true)}
+                      className="p-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-all cursor-pointer border border-indigo-500/20 shadow-md shadow-indigo-600/10 flex items-center justify-center"
+                      title="Expand Sidebar"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </button>
+                    <div className="text-[10px] font-mono text-slate-500 uppercase tracking-widest [writing-mode:vertical-lr] rotate-180 select-none py-2 font-semibold">
+                      Assets
+                    </div>
+                    {selectedAsset && (
+                      <div className="relative w-10 h-10 rounded-lg overflow-hidden border border-white/10 bg-black/40 shadow-md">
+                        {assetType === "image" ? (
+                          <img
+                            src={`/api/original/${selectedAsset}`}
+                            alt="Selected"
+                            className="w-full h-full object-cover"
+                          />
+                        ) : selectedAsset.toLowerCase().endsWith(".gif") ? (
+                          <img
+                            src={`/api/original/${selectedAsset}`}
+                            alt="Selected"
+                            className="w-full h-full object-cover"
+                          />
+                        ) : selectedAsset.includes("0001") ? (
+                          <img
+                            src={`/api/original/${selectedAsset}/00000.jpg`}
+                            alt="Selected"
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <video
+                            src={`/api/original/${selectedAsset}`}
+                            muted
+                            className="w-full h-full object-cover pointer-events-none"
+                          />
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -356,7 +421,7 @@ export default function Home() {
             </div>
 
             {/* Right container - Visual playground */}
-            <div className="lg:col-span-9 space-y-6">
+            <div className={`transition-all duration-300 ${isSidebarOpen ? "lg:col-span-9" : "lg:col-span-11"} space-y-6`}>
               
               <div className="bg-[#0C0C16] border border-white/5 rounded-3xl p-6 shadow-2xl backdrop-blur-lg flex flex-col min-h-[500px]">
                 <div className="flex items-center justify-between border-b border-white/5 pb-4 mb-4">

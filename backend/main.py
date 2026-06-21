@@ -171,46 +171,39 @@ def add_point_prompt(processor, x, y, label_bool, state):
 # Sessions storage to preserve states between click calls
 interactive_sessions = {}
 
+def transcode_to_h264(temp_path: str, final_path: str):
+    import subprocess
+    import shutil
+    try:
+        subprocess.run([
+            "ffmpeg", "-y", "-i", temp_path,
+            "-vcodec", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "baseline",
+            "-level", "3.0",
+            final_path
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+    except Exception as e:
+        print(f"ffmpeg transcoding failed: {e}. Falling back to raw copy.")
+        if os.path.exists(temp_path):
+            shutil.move(temp_path, final_path)
+
 @app.get("/api/health")
 def health_check():
     return {"status": "ok", "gpu_available": torch.cuda.is_available()}
 
+def get_images_used_in_examples():
+    # Only include groceries, test image and truck
+    return ["images/groceries.jpg", "images/test_image.jpg", "images/truck.jpg"]
+
+
 @app.get("/api/assets")
 def get_assets():
     # Scan original assets
-    assets_dir = os.path.join(workspace_dir, "sam3/assets")
-    original_images = []
-    original_videos = []
-    
-    if os.path.exists(assets_dir):
-        # Scan root files in sam3/assets
-        for f in os.listdir(assets_dir):
-            full_path = os.path.join(assets_dir, f)
-            if os.path.isdir(full_path):
-                continue
-            ext = os.path.splitext(f)[-1].lower()
-            if ext in ('.png', '.jpg', '.jpeg', '.bmp', '.webp'):
-                original_images.append(f)
-            elif ext in ('.mp4', '.avi', '.mov', '.gif'):
-                original_videos.append(f)
-                
-    img_dir = os.path.join(assets_dir, "images")
-    if os.path.exists(img_dir):
-        for f in os.listdir(img_dir):
-            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.webp')):
-                original_images.append(os.path.join("images", f))
-        
-    vid_dir = os.path.join(assets_dir, "videos")
-    if os.path.exists(vid_dir):
-        for f in os.listdir(vid_dir):
-            full_path = os.path.join(vid_dir, f)
-            if os.path.isdir(full_path):
-                # e.g., 0001 directory of frames
-                original_videos.append(os.path.join("videos", f))
-            else:
-                ext = os.path.splitext(f)[-1].lower()
-                if ext in ('.mp4', '.avi', '.mov', '.gif'):
-                    original_videos.append(os.path.join("videos", f))
+    original_images = get_images_used_in_examples()
+    original_videos = ["videos/bedroom.mp4"]
 
     # Scan static results
     results_dir = os.path.join(workspace_dir, "results")
@@ -336,9 +329,11 @@ def run_inference(req: InferenceRequest):
                 w, h = first_frame.size
                 
             output_filename = f"{session_id}.mp4"
+            temp_output_filename = f"raw_{session_id}.mp4"
             output_path = os.path.join(workspace_dir, "results/interactive", output_filename)
+            temp_output_path = os.path.join(workspace_dir, "results/interactive", temp_output_filename)
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            video_writer = cv2.VideoWriter(output_path, fourcc, 10.0, (w, h))
+            video_writer = cv2.VideoWriter(temp_output_path, fourcc, 10.0, (w, h))
             
             with torch.autocast(device_type="cuda" if torch.cuda.is_available() else "cpu", dtype=torch.bfloat16):
                 stream = predictor.handle_stream_request({
@@ -376,6 +371,7 @@ def run_inference(req: InferenceRequest):
                             video_writer.write(overlay_bgr)
                             
             video_writer.release()
+            transcode_to_h264(temp_output_path, output_path)
             predictor.handle_request({"type": "close_session", "session_id": vid_session_id})
             
             return {

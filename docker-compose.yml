@@ -42,4 +42,5 @@ services:
       - ./frontend:/app
       - /app/node_modules
       - /app/.next
+      - ./results:/app/results
     restart: always

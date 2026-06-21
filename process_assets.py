@@ -233,6 +233,24 @@ def test_video_folder(predictor):
     print(f"Saved compiled MP4 video to {mp4_path}")
     predictor.handle_request({"type": "close_session", "session_id": session_id})
 
+def transcode_to_h264(temp_path: str, final_path: str):
+    import subprocess
+    try:
+        subprocess.run([
+            "ffmpeg", "-y", "-i", temp_path,
+            "-vcodec", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "baseline",
+            "-level", "3.0",
+            final_path
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+    except Exception as e:
+        print(f"ffmpeg transcoding failed: {e}. Falling back to raw copy.")
+        if os.path.exists(temp_path):
+            shutil.move(temp_path, final_path)
+
 def test_video_file(predictor):
     print("\n--- Running Video Tracking Test on Bedroom Video (bedroom.mp4) ---")
     video_path = "sam3/assets/videos/bedroom.mp4"
@@ -271,8 +289,9 @@ def test_video_file(predictor):
     # Initialize MP4 VideoWriter
     h, w, _ = frames_rgb[0].shape
     mp4_path = "results/videos/bedroom_tracked.mp4"
+    raw_mp4_path = "results/videos/raw_bedroom_tracked.mp4"
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    video_writer = cv2.VideoWriter(mp4_path, fourcc, 10.0, (w, h))
+    video_writer = cv2.VideoWriter(raw_mp4_path, fourcc, 10.0, (w, h))
     
     for res in predictor.handle_stream_request({"type": "propagate_in_video", "session_id": session_id, "max_frame_num_to_track": 30}):
         frame_idx = res.get("frame_index")
@@ -299,6 +318,7 @@ def test_video_file(predictor):
                 video_writer.write(overlay_bgr)
                 
     video_writer.release()
+    transcode_to_h264(raw_mp4_path, mp4_path)
     print(f"Saved compiled MP4 video to {mp4_path}")
     predictor.handle_request({"type": "close_session", "session_id": session_id})
 
