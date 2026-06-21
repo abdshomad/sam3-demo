@@ -1,0 +1,34 @@
+# Python environment
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Model Caching
+.hf_cache/
+
+# Node/Next.js
+node_modules/
+.next/
+out/
+build/
+.npm/
+
+# Environment configurations
+.env
+.env*.local
+
+# Logs and outputs
+*.log
+service.log
+
+# Temporary test folders
+test_video_frames/
+
+.agents/*
+results/*
+plan/*
+issues/*
