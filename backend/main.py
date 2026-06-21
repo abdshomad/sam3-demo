@@ -627,6 +627,9 @@ class AssetDescribeBreakdown(BaseModel):
     objects: List[ObjectParser]
     candidates: List[ClassificationCandidate] = []
 
+class SimpleObjectExtractor(BaseModel):
+    objects: List[str]
+
 class DescribeRequest(BaseModel):
     asset_path: str  # e.g., "images/truck.jpg" or "videos/bedroom.mp4"
     prompt: Optional[str] = "Describe this asset in detail."
@@ -978,6 +981,159 @@ async def classify_and_crop_segmented_objects(image_path_or_array, masks, boxes,
 
     return crops_list
 
+_nlp = None
+
+def get_nlp():
+    global _nlp
+    if _nlp is None:
+        import spacy
+        try:
+            _nlp = spacy.load("en_core_web_sm")
+        except OSError:
+            print("Downloading spaCy en_core_web_sm model...", flush=True)
+            from spacy.cli import download
+            download("en_core_web_sm")
+            _nlp = spacy.load("en_core_web_sm")
+    return _nlp
+
+def extract_objects_with_spacy(text: str) -> list[str]:
+    nlp = get_nlp()
+    doc = nlp(text)
+    
+    # Comprehensive blacklist of abstract and meta words
+    blacklist = {
+        "it", "they", "them", "he", "she", "we", "you", "i", "us", "him", "her", "me",
+        "myself", "himself", "herself", "itself", "themselves", "ourselves", "yourselves",
+        "this", "that", "these", "those", "something", "anything", "nothing", "everything",
+        "someone", "anyone", "everyone", "no one", "somebody", "anybody", "everybody", "nobody",
+        "one", "ones", "others", "another", "both", "all", "any", "some", "none", "few",
+        "many", "several", "more", "most", "other", "such", "own", "same",
+        
+        # Visual / Layout
+        "image", "photo", "picture", "video", "asset", "frame", "pixels", "area", "scene",
+        "view", "shot", "angle", "perspective", "background", "foreground", "midground",
+        "middleground", "center", "centre", "left", "right", "top", "bottom", "side", "sides",
+        "corner", "corners", "border", "edge", "edges", "boundary", "boundaries",
+        
+        # Structural / Text / Meta
+        "step", "steps", "list", "item", "items", "entry", "entries", "row", "column", "table",
+        "section", "part", "parts", "component", "components", "attribute", "attributes",
+        "feature", "features", "detail", "details", "description", "descriptions", "text",
+        "prompt", "output", "object", "objects", "subject", "subjects", "thing", "things",
+        "element", "elements", "entity", "entities", "target", "targets", "focus", "focal",
+        
+        # Quality / Class / Number / Math
+        "color", "colour", "colors", "colours", "shade", "hue", "value", "tint", "tone",
+        "shape", "shapes", "form", "forms", "size", "sizes", "dimension", "dimensions",
+        "width", "height", "depth", "length", "scale", "position", "positions", "location",
+        "locations", "place", "places", "space", "spaces", "distance", "distances", "range",
+        "ranges", "texture", "textures", "material", "materials", "pattern", "patterns",
+        "design", "designs", "style", "styles", "aspect", "aspects", "instance", "instances",
+        "segment", "segments", "crop", "crops", "mask", "masks", "bounding", "box", "boxes",
+        "presence", "absence", "visible", "visibility", "viewable", "appearance",
+        "main", "secondary", "primary", "tertiary", "major", "minor", "key", "sole", "only",
+        "single", "double", "triple", "type", "types", "kind", "kinds", "sort", "sorts",
+        "class", "classes", "category", "categories", "analysis", "detection", "segmentation",
+        "classification", "candidate", "candidates", "label", "labels", "name", "names",
+        "value", "values", "addition", "subtraction", "multiplication", "division", "percent",
+        "percentage", "ratio", "ratios", "number", "numbers", "digit", "digits", "amount",
+        "amounts", "quantity", "quantities", "example", "examples", "specimen", "specimens",
+        "sample", "samples", "way", "manner", "fashion", "method", "methods", "mode", "modes",
+        "time", "times", "date", "dates", "year", "years", "month", "months", "day", "days",
+        "hour", "hours", "minute", "minutes", "second", "seconds", "version", "versions",
+        "source", "sources", "destination", "destinations", "level", "levels", "degree",
+        "degrees", "extent", "extents", "stage", "stages", "contrast", "brightness", "saturation",
+        "exposure", "lighting", "light", "shadow", "shadows", "reflection", "reflections", "glare",
+        "etc", "etcetera"
+    }
+
+    def clean_chunk_tokens(chunk) -> str:
+        skip_pos = {"ADV", "DET", "PRON", "ADP", "SCONJ", "CCONJ", "PUNCT", "PART"}
+        start_idx = 0
+        while start_idx < len(chunk) and chunk[start_idx].pos_ in skip_pos:
+            start_idx += 1
+        
+        end_idx = len(chunk)
+        while end_idx > start_idx and chunk[end_idx - 1].pos_ in {"PUNCT", "PART", "CCONJ", "SCONJ", "ADP"}:
+            end_idx -= 1
+            
+        if start_idx >= end_idx:
+            return ""
+        return chunk[start_idx:end_idx].text.strip()
+
+    extracted = []
+    
+    # 1. Extract noun chunks
+    for chunk in doc.noun_chunks:
+        if chunk.root.is_stop or chunk.root.pos_ == "PRON" or chunk.root.like_num:
+            continue
+        if chunk.root.lemma_.lower() in blacklist or chunk.root.text.lower() in blacklist:
+            continue
+            
+        chunk_text = clean_chunk_tokens(chunk)
+        chunk_text = chunk_text.strip(".,;:!?`'\" \n\t")
+        if not chunk_text or len(chunk_text) <= 1:
+            continue
+            
+        lower_chunk = chunk_text.lower()
+        if lower_chunk in blacklist:
+            continue
+        if any(lower_chunk.endswith(" " + b) for b in blacklist):
+            continue
+            
+        extracted.append(chunk_text)
+        
+    # 2. Extract individual nouns/propn only if not part of already extracted phrases
+    for token in doc:
+        if token.pos_ in ("NOUN", "PROPN"):
+            if token.is_stop or token.pos_ == "PRON" or token.like_num:
+                continue
+            if token.lemma_.lower() in blacklist or token.text.lower() in blacklist:
+                continue
+                
+            noun_text = token.text.strip(".,;:!?`'\" \n\t")
+            if noun_text and len(noun_text) > 1:
+                noun_lower = noun_text.lower()
+                if noun_lower not in blacklist:
+                    # Check if it's already part of some extracted chunk
+                    is_subpart = False
+                    for phrase in extracted:
+                        if noun_lower in [w.lower() for w in phrase.split()]:
+                            is_subpart = True
+                            break
+                    if not is_subpart:
+                        extracted.append(noun_text)
+                    
+    # 3. Extract Named Entities
+    for ent in doc.ents:
+        if ent.label_ in ("PRODUCT", "ORG", "PERSON", "FAC", "GPE", "LOC"):
+            ent_text = ent.text.strip(".,;:!?`'\" \n\t")
+            if ent_text and len(ent_text) > 1:
+                ent_clean = clean_chunk_tokens(ent)
+                ent_lower = ent_clean.lower()
+                if ent_lower not in blacklist and not any(ent_lower.endswith(" " + b) for b in blacklist):
+                    # Check if already subpart
+                    is_subpart = False
+                    for phrase in extracted:
+                        if ent_lower in [w.lower() for w in phrase.split()]:
+                            is_subpart = True
+                            break
+                    if not is_subpart:
+                        extracted.append(ent_clean)
+
+    # Clean and deduplicate (case-insensitive deduplication, but preserving original case)
+    seen = set()
+    unique_objects = []
+    for item in extracted:
+        item_lower = item.lower()
+        if item_lower not in seen:
+            seen.add(item_lower)
+            unique_objects.append(item)
+            
+    # Sort by length descending
+    unique_objects.sort(key=lambda x: len(x), reverse=True)
+    return unique_objects
+
 @app.post("/api/describe")
 async def describe_asset(req: DescribeRequest):
     import httpx
@@ -1044,172 +1200,27 @@ async def describe_asset(req: DescribeRequest):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Qwen-VL query failed: {str(e)}")
  
-        # Step 2: Query Qwen3.6 to parse the description into structured JSON
-        parser_prompt = (
-            "You are a precise data parsing assistant. Extract all segmentable objects, their visual attributes, "
-            "their sub-objects/parts (with their attributes), AND classification candidate categories with estimated confidence levels (0.0 to 1.0) "
-            "for ALL possible objects present in the image/video (including the main object, background objects, secondary objects, and key parts/components) "
-            "from the visual description below.\n\n"
-            "Visual Description:\n"
-            f"{vl_description}\n\n"
-            "Format your response strictly as a valid JSON object matching this schema. Do NOT include any comments (such as // or /*) or placeholders in your output:\n"
-            "{\n"
-            '  "objects": [\n'
-            "    {\n"
-            '      "name": "[object name, e.g. pickup truck]",\n'
-            '      "attributes": ["[attribute 1]", "[attribute 2]"],\n'
-            '      "sub_objects": [\n'
-            "        {\n"
-            '          "name": "[sub-object name, e.g. canopy]",\n'
-            '          "attributes": ["[sub-attribute 1]"]\n'
-            "        }\n"
-            "      ]\n"
-            "    }\n"
-            '  ],\n'
-            '  "candidates": [\n'
-            "    {\n"
-            '      "class_name": "[name of any possible object present in the image/video, e.g. pickup truck, wheel, tree, person, canopy, cab, wall, window, exhaust, graffiti]",\n'
-            '      "confidence": [float between 0.0 and 1.0]\n'
-            "    }\n"
-            '  ]\n'
-            "}"
-        )
-        
-        active_parse_model = await get_active_model("http://qwen3-6:8000", os.getenv("PARSE_MODEL", "Qwen/Qwen2.5-0.5B-Instruct"))
-        parser_payload = {
-            "model": active_parse_model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": parser_prompt
-                }
-            ],
-            "max_tokens": 1000,
-            "temperature": 0.1
-        }
-        
+        # Step 2: Extract objects using spaCy NER & Noun phrase parsing
+        objects_parsed = []
         try:
-            async with httpx.AsyncClient(timeout=180.0) as client:
-                response = await client.post("http://qwen3-6:8000/v1/chat/completions", json=parser_payload, headers=headers)
-                if response.status_code != 200:
-                    raise HTTPException(status_code=response.status_code, detail=f"vLLM Qwen3.6 server error: {response.text}")
-                
-                result = response.json()
-                raw_parser_text = result["choices"][0]["message"]["content"]
-                
-                json_block = ""
-                if "</think>" in raw_parser_text:
-                    raw_parser_text = raw_parser_text.split("</think>", 1)[1]
-                elif "</thinking>" in raw_parser_text:
-                    raw_parser_text = raw_parser_text.split("</thinking>", 1)[1]
-                else:
-                    raw_parser_text = re.sub(r'<thinking>.*?</thinking>', '', raw_parser_text, flags=re.DOTALL)
-                    raw_parser_text = re.sub(r'<think>.*?</think>', '', raw_parser_text, flags=re.DOTALL)
-                
-                match = re.search(r'\{.*\}', raw_parser_text, re.DOTALL)
-                if match:
-                    json_block = match.group(0)
-                
-                objects_parsed = []
-                candidates_parsed = []
-                if json_block:
-                    try:
-                        # Clean single-line and multi-line comments
-                        lines = []
-                        for line in json_block.splitlines():
-                            stripped = line.strip()
-                            if stripped.startswith("//") or stripped.startswith("/*"):
-                                continue
-                            if "//" in line:
-                                parts = line.split("//", 1)
-                                if parts[0].count('"') % 2 == 0:
-                                    line = parts[0]
-                            lines.append(line)
-                        cleaned_json_block = "\n".join(lines)
-                        
-                        # Clean trailing commas
-                        cleaned_json_block = re.sub(r',\s*\]', ']', cleaned_json_block)
-                        cleaned_json_block = re.sub(r',\s*\}', '}', cleaned_json_block)
-                        
-                        parsed_data = AssetDescribeBreakdown.model_validate_json(cleaned_json_block)
-                        for obj in parsed_data.objects:
-                            name = obj.name.strip()
-                            attrs = [a.strip() for a in obj.attributes if a.strip()]
-                            if not name:
-                                continue
-                            attr_str = " ".join(attrs)
-                            main_prompt = f"{attr_str} {name}".strip()
-                            
-                            sub_objects_list = []
-                            for sub in obj.sub_objects:
-                                sub_name = sub.name.strip()
-                                sub_attrs = [sa.strip() for sa in sub.attributes if sa.strip()]
-                                if not sub_name:
-                                    continue
-                                sub_attr_str = " ".join(sub_attrs)
-                                sub_prompt = f"{sub_attr_str} {sub_name} of {main_prompt}".strip()
-                                
-                                sub_objects_list.append({
-                                    "name": sub_name,
-                                    "prompt": sub_prompt,
-                                    "attributes": sub_attrs
-                                })
-                                
-                            objects_parsed.append({
-                                "name": name,
-                                "prompt": main_prompt,
-                                "attributes": attrs,
-                                "sub_objects": sub_objects_list
-                            })
-                        
-                        sorted_candidates = sorted(parsed_data.candidates, key=lambda x: x.confidence, reverse=True)
-                        candidates_parsed = [{"class_name": c.class_name.strip("`'\" \n\t."), "confidence": c.confidence} for c in sorted_candidates]
-                    except Exception as e:
-                        print(f"Pydantic parsing failed for asset describe breakdown: {e}", flush=True)
-                        print(f"Raw parser text was:\n{raw_parser_text}", flush=True)
-                        print(f"Extracted json_block was:\n{json_block}", flush=True)
-                        
-                        # Fallback parsing using simple regex
-                        try:
-                            candidate_matches = re.findall(r'"class_name":\s*"([^"]+)"\s*,\s*"confidence":\s*([0-9.]+)', json_block)
-                            if not candidate_matches:
-                                candidate_matches = re.findall(r'"confidence":\s*([0-9.]+)\s*,\s*"class_name":\s*"([^"]+)"', json_block)
-                                candidate_matches = [(name, float(conf)) for conf, name in candidate_matches]
-                            else:
-                                candidate_matches = [(name, float(conf)) for name, conf in candidate_matches]
-                                
-                            for name, conf in candidate_matches:
-                                candidates_parsed.append({
-                                    "class_name": name.strip("`'\" \n\t."),
-                                    "confidence": conf
-                                })
-                            
-                            candidates_parsed = sorted(candidates_parsed, key=lambda x: x["confidence"], reverse=True)
-                            
-                            # Also manually extract objects if we can
-                            object_names = re.findall(r'"name":\s*"([^"]+)"', json_block)
-                            for name in object_names:
-                                name_clean = name.strip("`'\" \n\t.")
-                                if name_clean and not any(o["name"].lower() == name_clean.lower() for o in objects_parsed):
-                                    objects_parsed.append({
-                                        "name": name_clean,
-                                        "prompt": name_clean,
-                                        "attributes": [],
-                                        "sub_objects": []
-                                    })
-                        except Exception as fallback_err:
-                            print(f"Manual fallback extraction in describe_asset also failed: {fallback_err}", flush=True)
-                
-                return {
-                    "success": True,
-                    "description": vl_description,
-                    "objects": objects_parsed,
-                    "candidates": candidates_parsed
-                }
-        except httpx.RequestError as exc:
-            raise HTTPException(status_code=503, detail=f"Could not connect to Qwen3.6 service: {str(exc)}")
+            print("Running spaCy NER and noun phrase parsing...", flush=True)
+            spacy_objects = extract_objects_with_spacy(vl_description)
+            for name in spacy_objects:
+                objects_parsed.append({
+                    "name": name,
+                    "prompt": name,
+                    "attributes": [],
+                    "sub_objects": []
+                })
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Qwen3.6 query failed: {str(e)}")
+            print(f"spaCy extraction failed: {e}", flush=True)
+
+        return {
+            "success": True,
+            "description": vl_description,
+            "objects": objects_parsed,
+            "candidates": []
+        }
 
     else:
         # Standard description query

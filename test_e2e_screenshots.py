@@ -89,27 +89,27 @@ def main():
         print("Saving 3_segment_object_before.png...")
         page.screenshot(path="screenshots/3_segment_object_before.png")
         
-        # Action: Find the card for 'truck' (or similar object like 'pickup truck' or 'white pickup truck') and click its Segment button
+        # Action: Find the pill button for 'truck' (or similar object) and click it
         segment_btn = None
+        container = page.locator("div.custom-scrollbar")
         for object_name in ["truck", "pickup truck", "white pickup truck", "white truck", "vehicle"]:
-            h4_element = page.locator(f"h4:has-text('{object_name}')").first
-            if h4_element.is_visible():
-                print(f"Found object label: '{object_name}'")
-                segment_btn = h4_element.locator("xpath=../..").locator("button", has_text="Segment").first
+            btn = container.locator(f"button:has-text('{object_name}')").first
+            if btn.is_visible():
+                print(f"Found object pill button: '{object_name}'")
+                segment_btn = btn
                 break
                 
         if segment_btn is None:
-            # Fallback to the first available Segment button on the page
-            print("Fallback: Using the first available Segment button.")
-            segment_btn = page.locator("button", has_text="Segment").first
+            # Fallback to the third button in the container (first is copy, second is re-run)
+            print("Fallback: Using the first available object pill button.")
+            segment_btn = container.locator("button").nth(2)
             
         print("Triggering segmentation...")
         segment_btn.click()
         
-        # Wait: Wait for SAM segmentation API call to complete
+        # Wait: Wait for SAM segmentation API call to complete and overlay image to render
         print("Waiting for SAM3 segmentation to complete and mask to overlay...")
-        # When active, the button text toggles to '✓ Active'
-        page.wait_for_selector("button:has-text('Active')", timeout=30000)
+        page.wait_for_selector("img[alt='Visual Segment']", timeout=30000)
         page.wait_for_timeout(3000)  # Stabilize mask rendering overlay
         
         # After Segment: The overlay image/canvas shows the highlight mask

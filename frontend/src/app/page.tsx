@@ -157,6 +157,17 @@ export default function Home() {
   const [qwenPrompt, setQwenPrompt] = useState<string>("Identify the main segmentable objects and their visual attributes.");
   const [description, setDescription] = useState<string>("");
   const [describing, setDescribing] = useState<boolean>(false);
+  const [copied, setCopied] = useState<boolean>(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(description);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy text: ", err);
+    }
+  };
 
   interface SubObject {
     name: string;
@@ -172,6 +183,7 @@ export default function Home() {
   }
 
   const [detectedObjects, setDetectedObjects] = useState<ObjectItem[]>([]);
+  const [objectSearch, setObjectSearch] = useState<string>("");
   
   // User Mode Config State
   const [isTechnicalMode, setIsTechnicalMode] = useState<boolean>(false);
@@ -281,6 +293,7 @@ export default function Home() {
     setDescription("");
     setDetectedObjects([]);
     setAssetCandidates([]);
+    setObjectSearch("");
     
     // Choose suitable default prompts
     if (path.includes("truck")) setPrompt("truck");
@@ -404,6 +417,7 @@ export default function Home() {
     setDescription("");
     setDetectedObjects([]);
     setAssetCandidates([]);
+    setObjectSearch("");
     try {
       const res = await fetch("/api/describe", {
         method: "POST",
@@ -432,7 +446,6 @@ export default function Home() {
 
   const segmentObject = async (objName: string) => {
     setPrompt(objName);
-    setPromptMode("text");
     setLoading(true);
     try {
       const res = await fetch("/api/inference", {
@@ -448,6 +461,7 @@ export default function Home() {
       if (data.success) {
         setOutputUrl(data.output_url);
         setSessionId(data.session_id);
+        setSegmentedCrops(data.crops || []);
       } else {
         alert("SAM3 Segmentation failed: " + data.detail);
       }
@@ -457,6 +471,90 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const renderTextWithSearchHighlight = (text: string, search: string) => {
+    if (!text) return null;
+    if (!search || !search.trim()) return text;
+    
+    const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`(${escaped})`, "gi");
+    const parts = text.split(regex);
+    
+    return parts.map((part, index) => {
+      if (index % 2 === 1) {
+        return (
+          <mark key={index} className="bg-amber-500/30 text-amber-200 px-1 py-0.5 rounded font-medium border border-amber-500/20">
+            {part}
+          </mark>
+        );
+      }
+      return part;
+    });
+  };
+
+  const renderInteractiveDescription = (text: string, objects: ObjectItem[]) => {
+    if (!text) return null;
+    if (!objects || objects.length === 0) {
+      return renderTextWithSearchHighlight(text, objectSearch);
+    }
+
+    const objNames = objects
+      .map((o) => o.name.toLowerCase().trim())
+      .filter(Boolean);
+      
+    if (objNames.length === 0) {
+      return renderTextWithSearchHighlight(text, objectSearch);
+    }
+
+    const uniqueObjNames = Array.from(new Set(objNames));
+    uniqueObjNames.sort((a, b) => b.length - a.length);
+
+    const patterns = uniqueObjNames.map((name) => {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const startBoundary = /^\w/.test(name) ? "\\b" : "";
+      const endBoundary = /\w$/.test(name) ? "\\b" : "";
+      return `${startBoundary}${escaped}${endBoundary}`;
+    });
+
+    const regex = new RegExp(`(${patterns.join("|")})`, "gi");
+
+    const parts = text.split(regex);
+    if (parts.length <= 1) {
+      return renderTextWithSearchHighlight(text, objectSearch);
+    }
+
+    return parts.map((part, index) => {
+      if (index % 2 === 1) {
+        const matchingObj = objects.find(
+          (o) => o.name.toLowerCase().trim() === part.toLowerCase().trim()
+        );
+        const promptToUse = matchingObj ? matchingObj.prompt : part;
+        const isActive = prompt === promptToUse;
+        const matchesSearch = objectSearch.trim() && (
+          part.toLowerCase().includes(objectSearch.toLowerCase()) ||
+          promptToUse.toLowerCase().includes(objectSearch.toLowerCase())
+        );
+
+        return (
+          <button
+            key={index}
+            onClick={() => segmentObject(promptToUse)}
+            className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-semibold transition-all active:scale-[0.98] mx-0.5 cursor-pointer align-baseline ${
+              isActive
+                ? "bg-indigo-600 text-white shadow border border-indigo-400"
+                : matchesSearch
+                  ? "bg-amber-500/20 text-amber-200 border border-amber-500/50 hover:bg-amber-500/30 shadow-amber-500/10 shadow-sm"
+                  : "bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 border border-indigo-500/30 hover:border-indigo-400 hover:text-white"
+            } ${matchesSearch ? "ring-1 ring-amber-500/30" : ""}`}
+            title={`Click to segment "${promptToUse}"`}
+          >
+            {part}
+          </button>
+        );
+      }
+      return renderTextWithSearchHighlight(part, objectSearch);
+    });
   };
 
   return (
@@ -1003,17 +1101,63 @@ export default function Home() {
                             </div>
                           )}
 
+                          {/* Quick Search Input */}
+                          {!describing && (description || detectedObjects.length > 0) && (
+                            <div className="relative">
+                              <span className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-500">
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                </svg>
+                              </span>
+                              <input
+                                type="text"
+                                value={objectSearch}
+                                onChange={(e) => setObjectSearch(e.target.value)}
+                                placeholder="Quick search description or objects..."
+                                className="w-full bg-[#0F0F1A]/80 border border-white/10 rounded-xl pl-8 pr-8 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/50 placeholder:text-slate-500"
+                              />
+                              {objectSearch && (
+                                <button
+                                  onClick={() => setObjectSearch("")}
+                                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-[10px] cursor-pointer hover:bg-white/10 rounded-full w-4 h-4 flex items-center justify-center transition-all"
+                                >
+                                  ✕
+                                </button>
+                              )}
+                            </div>
+                          )}
+
                           {/* Content */}
                           {!describing && (description || assetCandidates.length > 0 || detectedObjects.length > 0) && (
                             <div className="space-y-3 flex-1 overflow-y-auto max-h-[220px] custom-scrollbar pr-1">
                               {/* Descriptive text output */}
                               {description && (
                                 <div className="bg-[#07070F]/60 border border-white/5 rounded-xl p-3 space-y-1">
-                                  <span className="text-[9px] uppercase tracking-wider text-slate-400 font-mono font-bold block">
-                                    Description
-                                  </span>
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[9px] uppercase tracking-wider text-slate-400 font-mono font-bold block">
+                                      Description
+                                    </span>
+                                    <button
+                                      onClick={handleCopy}
+                                      className="p-1 rounded bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white transition-all cursor-pointer border border-white/5 flex items-center justify-center space-x-1"
+                                      title="Copy Description to Clipboard"
+                                    >
+                                      {copied ? (
+                                        <>
+                                          <svg className="w-3.5 h-3.5 text-emerald-400 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                          </svg>
+                                          <span className="text-[8px] text-emerald-400 font-mono">Copied!</span>
+                                        </>
+                                      ) : (
+                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                                        </svg>
+                                      )}
+                                    </button>
+                                  </div>
                                   <p className="text-[11px] text-slate-300 leading-relaxed font-sans whitespace-pre-wrap">
-                                    {description}
+                                    {renderInteractiveDescription(description, detectedObjects)}
                                   </p>
                                 </div>
                               )}
@@ -1045,52 +1189,41 @@ export default function Home() {
                                   <span className="text-[9px] uppercase tracking-wider text-slate-400 font-mono font-bold block">
                                     {isTechnicalMode ? "Select an object or part to segment with SAM3" : "Choose Object to Segment:"}
                                   </span>
-                                  <div className="flex flex-wrap gap-1.5">
-                                    {detectedObjects.map((obj) => {
-                                      const isActive = prompt === obj.prompt;
+                                  {(() => {
+                                    const filteredObjects = detectedObjects.filter(
+                                      (obj) =>
+                                        obj.name.toLowerCase().includes(objectSearch.toLowerCase()) ||
+                                        obj.prompt.toLowerCase().includes(objectSearch.toLowerCase())
+                                    );
+                                    if (filteredObjects.length === 0) {
                                       return (
-                                        <div key={obj.name} className="flex flex-col space-y-1 w-full bg-white/5 border border-white/10 rounded-xl p-2.5">
-                                          <div className="flex items-center justify-between">
-                                            <h4 className="text-xs font-bold text-white capitalize">{obj.name}</h4>
-                                            <button
-                                              onClick={() => segmentObject(obj.prompt)}
-                                              className={`px-2 py-1 rounded-lg text-[10px] font-semibold transition-all active:scale-[0.98] ${
-                                                isActive
-                                                  ? "bg-indigo-600 text-white shadow border border-indigo-400"
-                                                  : "bg-white/10 hover:bg-white/15 text-white border border-white/5"
-                                              }`}
-                                            >
-                                              {isActive ? "✓ Active" : "Segment"}
-                                            </button>
-                                          </div>
-                                          {isTechnicalMode && obj.attributes && obj.attributes.length > 0 && (
-                                            <span className="text-[9px] text-slate-400 italic">Attributes: {obj.attributes.join(", ")}</span>
-                                          )}
-                                          {obj.sub_objects && obj.sub_objects.length > 0 && (
-                                            <div className="flex flex-wrap gap-1.5 mt-1.5 pt-1.5 border-t border-white/5">
-                                              {obj.sub_objects.map((sub) => {
-                                                const isSubActive = prompt === sub.prompt;
-                                                return (
-                                                  <button
-                                                    key={sub.name}
-                                                    onClick={() => segmentObject(sub.prompt)}
-                                                    className={`flex items-center px-2 py-0.5 rounded-lg text-[9px] font-medium transition-all active:scale-[0.98] ${
-                                                      isSubActive
-                                                        ? "bg-purple-600 text-white border border-purple-400"
-                                                        : "bg-purple-950/20 hover:bg-purple-900/30 text-purple-200 border border-purple-500/20"
-                                                    }`}
-                                                    title={`Prompt: ${sub.prompt}`}
-                                                  >
-                                                    <span>• {sub.name}</span>
-                                                  </button>
-                                                );
-                                              })}
-                                            </div>
-                                          )}
+                                        <div className="text-[10px] text-slate-500 font-mono italic">
+                                          No matching objects found.
                                         </div>
                                       );
-                                    })}
-                                  </div>
+                                    }
+                                    return (
+                                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                                        {filteredObjects.map((obj) => {
+                                          const isActive = prompt === obj.prompt;
+                                          return (
+                                            <button
+                                              key={obj.name}
+                                              onClick={() => segmentObject(obj.prompt)}
+                                              className={`px-2 py-0.5 rounded-lg text-[10px] transition-all border cursor-pointer font-medium ${
+                                                isActive
+                                                  ? "bg-indigo-600/20 border-indigo-500/30 text-indigo-300 shadow-sm"
+                                                  : "bg-white/5 border-white/5 text-slate-300 hover:text-white hover:bg-white/10"
+                                              }`}
+                                              title={`Prompt: ${obj.prompt}`}
+                                            >
+                                              {obj.name}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                               )}
                             </div>
@@ -1198,6 +1331,60 @@ export default function Home() {
                         </div>
                       )}
                     </div>
+                    {/* Segmented Object Crops and Classification */}
+                    {segmentedCrops && segmentedCrops.length > 0 && (
+                      <div className="w-full mt-6 space-y-6 border-t border-white/5 pt-6">
+                        <span className="text-xs text-slate-400 uppercase tracking-widest font-mono block text-center">
+                          Segmented Object Details
+                        </span>
+                        {segmentedCrops.map((crop, idx) => (
+                          <div key={idx} className="bg-[#0C0C16] border border-white/5 rounded-2xl p-4 space-y-4 shadow-xl text-left w-full">
+                            <div className="flex flex-col space-y-4">
+                              {/* Crop image */}
+                              <div className="flex flex-col items-center justify-center space-y-2">
+                                <span className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">Segmented Object Crop</span>
+                                <div className="border border-white/5 bg-black/40 rounded-xl overflow-hidden shadow-inner flex items-center justify-center p-2 w-[180px] h-[180px] aspect-square">
+                                  <img src={crop.crop_url} alt={`Crop ${idx}`} className="max-h-[160px] object-contain rounded-lg" />
+                                </div>
+                              </div>
+                              {/* Classification and candidates */}
+                              <div className="space-y-3 w-full">
+                                {crop.description && (
+                                  <div className="bg-[#07070F]/60 border border-white/5 rounded-xl p-3 space-y-1">
+                                    <span className="text-[9px] uppercase tracking-wider text-slate-400 font-mono font-bold block">
+                                      Qwen VL Description
+                                    </span>
+                                    <p className="text-[11px] text-slate-300 leading-relaxed font-sans whitespace-pre-wrap">
+                                      {crop.description}
+                                    </p>
+                                  </div>
+                                )}
+                                
+                                {crop.candidates && crop.candidates.length > 0 && (
+                                  <div className="space-y-1.5">
+                                    <span className="text-[9px] uppercase tracking-wider text-slate-400 font-mono font-bold block">
+                                      Candidate Classes (Qwen 3.6)
+                                    </span>
+                                    <div className="space-y-1">
+                                      {crop.candidates.map((cand, candIdx) => (
+                                        <div key={candIdx} className="flex items-center justify-between text-xs bg-white/5 px-2.5 py-1.5 rounded-lg">
+                                          <span className={`capitalize truncate mr-2 ${candIdx === 0 ? "font-bold text-emerald-400" : "text-slate-300"}`}>
+                                            {cand.class_name}
+                                          </span>
+                                          <span className={`font-mono text-[9px] px-1.5 py-0.5 rounded flex-shrink-0 ${candIdx === 0 ? "bg-emerald-500/20 text-emerald-300 font-semibold" : "bg-white/5 text-slate-400"}`}>
+                                            {Math.round(cand.confidence * 100)}%
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
 
