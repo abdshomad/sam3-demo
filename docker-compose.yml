@@ -15,8 +15,11 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    env_file:
+      - .env
     environment:
       - CUDA_VISIBLE_DEVICES=0
+
     deploy:
       resources:
         reservations:
@@ -25,9 +28,9 @@ services:
               count: 1
               capabilities: [gpu]
     volumes:
-      - ./results:/app/results
-      - ./.hf_cache:/app/.hf_cache
-      - .env:/app/.env
+      - .:/app
+      - /app/.venv
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: always
 
   frontend:
@@ -44,3 +47,54 @@ services:
       - /app/.next
       - ./results:/app/results
     restart: always
+
+  qwen3-vl:
+    image: vllm/vllm-openai:v0.11.0
+    entrypoint: []
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_HOME=/app/.hf_cache
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+    volumes:
+      - ./results:/app/results
+      - ./.hf_cache:/app/.hf_cache
+      - ./sam3/assets:/app/sam3/assets
+    ports:
+      - "8009:8000"
+    command: >
+      bash -c 'pip install uv && uv pip install --system --upgrade "numpy<2.3" transformers mistral-common && uv run python3 /app/results/patch_qwen_vl.py && uv run python3 -m vllm.entrypoints.openai.api_server --model ${VL_MODEL:-Qwen/Qwen3-VL-8B-Thinking} --port 8000 --quantization fp8 --gpu-memory-utilization 0.40 --max-model-len 4096 --allowed-local-media-path /app --trust-remote-code'
+    restart: always
+
+  qwen3-6:
+    image: vllm/vllm-openai:v0.11.0
+    entrypoint: []
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_HOME=/app/.hf_cache
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+    volumes:
+      - ./results:/app/results
+      - ./.hf_cache:/app/.hf_cache
+    ports:
+      - "8015:8000"
+    command: >
+      bash -c 'pip install uv && uv pip install --system --upgrade "numpy<2.3" transformers mistral-common && uv run python3 /app/results/patch_qwen_moe.py && uv run python3 -m vllm.entrypoints.openai.api_server --model ${PARSE_MODEL:-Qwen/Qwen2.5-0.5B-Instruct} --port 8000 --gpu-memory-utilization 0.15 --tensor-parallel-size 1 --max-model-len 4096 --trust-remote-code'
+    restart: always
+
+

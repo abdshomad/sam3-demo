@@ -104,11 +104,32 @@ class ModelManager:
         return self.image_processor
         
     def get_video_predictor(self):
-        if self.video_predictor is None:
-            print("Lazy loading video model...")
-            self.video_predictor = build_sam3_predictor(bpe_path=self.bpe_path, version="sam3.1", compile=False, async_loading_frames=False, use_fa3=False)
+        current_version = os.getenv("SAM_VERSION", "sam3.1")
+        # Map sam2 to sam3 since build_sam3_predictor takes "sam3" or "sam3.1"
+        builder_version = "sam3" if current_version == "sam2" else current_version
+        
+        # If version changed or predictor not loaded yet
+        if self.video_predictor is None or getattr(self, "_loaded_sam_version", None) != current_version:
+            print(f"Lazy loading video model with version {current_version} (builder version: {builder_version})...")
+            # Free old predictor memory if it exists
+            if self.video_predictor is not None:
+                del self.video_predictor
+                import gc
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    
+            self.video_predictor = build_sam3_predictor(
+                bpe_path=self.bpe_path, 
+                version=builder_version, 
+                compile=False, 
+                async_loading_frames=False, 
+                use_fa3=False
+            )
             self.video_predictor.model.batched_grounding_batch_size = 2
             self.video_predictor.model.postprocess_batch_size = 2
+            self._loaded_sam_version = current_version
+            
         return self.video_predictor
 
 model_manager = ModelManager()
@@ -193,6 +214,116 @@ def transcode_to_h264(temp_path: str, final_path: str):
 @app.get("/api/health")
 def health_check():
     return {"status": "ok", "gpu_available": torch.cuda.is_available()}
+
+# Configuration Models
+class ConfigResponse(BaseModel):
+    vl_model: str
+    parse_model: str
+    sam_version: str
+    available_vl_models: List[Dict[str, str]]
+    available_parse_models: List[Dict[str, str]]
+    available_sam_versions: List[Dict[str, str]]
+
+class UpdateConfigRequest(BaseModel):
+    vl_model: str
+    parse_model: str
+    sam_version: str
+
+@app.get("/api/config", response_model=ConfigResponse)
+def get_config():
+    # Read model configurations from environment/env
+    vl_model = os.getenv("VL_MODEL", "Qwen/Qwen3-VL-8B-Thinking")
+    parse_model = os.getenv("PARSE_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
+    sam_version = os.getenv("SAM_VERSION", "sam3.1")
+    
+    available_vl_models = [
+        {"id": "Qwen/Qwen3-VL-8B-Thinking", "name": "Qwen3-VL-8B-Thinking (Default, Thinking)", "description": "Flagship multimodal thinking model (8B)."},
+        {"id": "Qwen/Qwen2.5-VL-7B-Instruct", "name": "Qwen2.5-VL-7B-Instruct (Standard)", "description": "Standard fast multimodal model (7B)."},
+        {"id": "Qwen/Qwen2.5-VL-3B-Instruct", "name": "Qwen2.5-VL-3B-Instruct (Lightweight)", "description": "Fast and light multimodal model (3B)."}
+    ]
+    
+    available_parse_models = [
+        {"id": "Qwen/Qwen2.5-0.5B-Instruct", "name": "Qwen2.5-0.5B-Instruct (Ultralight, Cached)", "description": "Ultralight model for extremely fast inference and low memory footprint."},
+        {"id": "Qwen/Qwen3.6-35B-A3B-FP8", "name": "Qwen3.6-35B-A3B-FP8 (Default MoE)", "description": "Highly efficient 35B Mixture-of-Experts (3B active parameters) text model."},
+        {"id": "Qwen/Qwen3.6-27B-FP8", "name": "Qwen3.6-27B-FP8 (Dense)", "description": "Flagship 27B dense text model."},
+        {"id": "Qwen/Qwen3-8B-FP8", "name": "Qwen3-8B-FP8 (Lightweight)", "description": "Fast and lightweight 8B text model."}
+    ]
+
+    available_sam_versions = [
+        {"id": "sam3.1", "name": "SAM 3.1 (Default, Object Multiplex)", "description": "Latest release with Object Multiplex for joint multi-object tracking and compilation support."},
+        {"id": "sam3", "name": "SAM 3 (Base)", "description": "Standard base SAM3 model for video tracking and segmenting."},
+        {"id": "sam2", "name": "SAM 2 (SAM 3 backward-compatible mode)", "description": "SAM 3 base running in backward-compatibility mode for SAM 2 tasks."}
+    ]
+    
+    return {
+        "vl_model": vl_model,
+        "parse_model": parse_model,
+        "sam_version": sam_version,
+        "available_vl_models": available_vl_models,
+        "available_parse_models": available_parse_models,
+        "available_sam_versions": available_sam_versions
+    }
+
+@app.post("/api/config/update-models")
+def update_models(req: UpdateConfigRequest, background_tasks: BackgroundTasks):
+    # Rewrite the .env file with updated models
+    vl_model = req.vl_model.strip()
+    parse_model = req.parse_model.strip()
+    sam_version = req.sam_version.strip()
+    
+    # Read current .env content
+    env_file = os.path.join(workspace_dir, ".env")
+    current_env = {}
+    if os.path.exists(env_file):
+        with open(env_file, "r") as f:
+            for line in f:
+                line_stripped = line.strip()
+                if line_stripped and not line_stripped.startswith("#") and "=" in line_stripped:
+                    key, val = line_stripped.split("=", 1)
+                    current_env[key.strip()] = val.strip()
+                    
+    # Update values
+    current_env["VL_MODEL"] = vl_model
+    current_env["PARSE_MODEL"] = parse_model
+    current_env["SAM_VERSION"] = sam_version
+    
+    # Write back
+    with open(env_file, "w") as f:
+        for k, v in current_env.items():
+            f.write(f"{k}={v}\n")
+            
+    # Check if Qwen models changed
+    old_vl_model = os.environ.get("VL_MODEL", "").strip()
+    old_parse_model = os.environ.get("PARSE_MODEL", "").strip()
+    qwen_models_changed = (vl_model != old_vl_model or parse_model != old_parse_model)
+
+    # Set environment variables for the current backend process as well
+    os.environ["VL_MODEL"] = vl_model
+    os.environ["PARSE_MODEL"] = parse_model
+    os.environ["SAM_VERSION"] = sam_version
+
+    if qwen_models_changed:
+        # Background task to restart the containers
+        def restart_containers():
+            import subprocess
+            try:
+                print(f"Triggering background docker compose restart for models: VL={vl_model}, PARSE={parse_model}")
+                res = subprocess.run(
+                    ["docker", "compose", "up", "-d", "--force-recreate", "qwen3-vl", "qwen3-6"],
+                    cwd=workspace_dir,
+                    capture_output=True,
+                    text=True
+                )
+                print(f"Docker compose restart stdout: {res.stdout}")
+                if res.stderr:
+                    print(f"Docker compose restart stderr: {res.stderr}")
+            except Exception as e:
+                print(f"Failed to restart docker compose containers: {e}")
+
+        background_tasks.add_task(restart_containers)
+        return {"success": True, "message": f"Updated configurations (SAM version set to {sam_version}). Recreating Qwen container services in background..."}
+    else:
+        return {"success": True, "message": f"Updated configurations (SAM version set to {sam_version}). No container restart needed since Qwen models did not change."}
 
 def get_images_used_in_examples():
     # Only include groceries, test image and truck
@@ -463,3 +594,247 @@ def run_interactive_click(req: ClickInferenceRequest):
         if session_id in interactive_sessions:
             del interactive_sessions[session_id]
         raise HTTPException(status_code=500, detail=f"Click inference failed: {str(e)}")
+
+class DescribeRequest(BaseModel):
+    asset_path: str  # e.g., "images/truck.jpg" or "videos/bedroom.mp4"
+    prompt: Optional[str] = "Describe this asset in detail."
+    want_breakdown: Optional[bool] = False
+
+def parse_pydantic_breakdown(text: str) -> list[dict]:
+    import re
+    import json
+    
+    # Clean thinking tags if present
+    cleaned_text = text
+    if "</think>" in text:
+        cleaned_text = text.split("</think>", 1)[1]
+    elif "</thinking>" in text:
+        cleaned_text = text.split("</thinking>", 1)[1]
+    else:
+        cleaned_text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL)
+        cleaned_text = re.sub(r'<think>.*?</think>', '', cleaned_text, flags=re.DOTALL)
+        
+    json_block = ""
+    match = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
+    if match:
+        json_block = match.group(0)
+        
+    objects_data = []
+    
+    if json_block:
+        try:
+            data = json.loads(json_block)
+            raw_objects = data.get("objects", [])
+            for obj in raw_objects:
+                name = obj.get("name", "").strip()
+                attrs = [a.strip() for a in obj.get("attributes", []) if a.strip()]
+                if not name:
+                    continue
+                    
+                attr_str = " ".join(attrs)
+                main_prompt = f"{attr_str} {name}".strip()
+                
+                sub_objects_list = []
+                for sub in obj.get("sub_objects", []):
+                    sub_name = sub.get("name", "").strip()
+                    sub_attrs = [sa.strip() for sa in sub.get("attributes", []) if sa.strip()]
+                    if not sub_name:
+                        continue
+                        
+                    sub_attr_str = " ".join(sub_attrs)
+                    sub_prompt = f"{sub_attr_str} {sub_name} of {main_prompt}".strip()
+                    
+                    sub_objects_list.append({
+                        "name": sub_name,
+                        "prompt": sub_prompt,
+                        "attributes": sub_attrs
+                    })
+                    
+                objects_data.append({
+                    "name": name,
+                    "prompt": main_prompt,
+                    "attributes": attrs,
+                    "sub_objects": sub_objects_list
+                })
+        except Exception as e:
+            print(f"Pydantic parsing failed: {e}")
+            
+    # Fallback to bulleted lists
+    if not objects_data:
+        fallback_items = []
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("- ") or line.startswith("* "):
+                item = line[2:].strip().strip('.,;":\'')
+                if item:
+                    fallback_items.append(item)
+                    
+        seen = set()
+        deduped = []
+        for item in fallback_items:
+            if item.lower() not in seen:
+                seen.add(item.lower())
+                deduped.append(item)
+                
+        for item in deduped:
+            objects_data.append({
+                "name": item,
+                "prompt": item,
+                "attributes": [],
+                "sub_objects": []
+            })
+            
+    return objects_data
+
+@app.post("/api/describe")
+async def describe_asset(req: DescribeRequest):
+    import httpx
+    
+    input_path = os.path.join(workspace_dir, "sam3/assets", req.asset_path)
+    if not os.path.exists(input_path):
+        raise HTTPException(status_code=404, detail=f"Asset not found: {req.asset_path}")
+
+    container_file_path = f"/app/sam3/assets/{req.asset_path}"
+    is_video = req.asset_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.gif'))
+    
+    if is_video:
+        media_type = "video_url"
+        media_payload = {"video_url": {"url": f"file://{container_file_path}"}}
+    else:
+        media_type = "image_url"
+        media_payload = {"image_url": {"url": f"file://{container_file_path}"}}
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer EMPTY"
+    }
+
+    if req.want_breakdown:
+        # Step 1: Query Qwen-VL to get a detailed visual description
+        vl_prompt = (
+            "Describe all major segmentable objects visible in this asset in detail, including their visual attributes (like color, shape, relative position, or texture) and their key sub-objects/parts (with their attributes). Do NOT limit your description to only one object; list all major elements."
+        )
+        vl_payload = {
+            "model": os.getenv("VL_MODEL", "Qwen/Qwen3-VL-8B-Thinking"),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": vl_prompt},
+                        {"type": media_type, **media_payload}
+                    ]
+                }
+            ],
+            "max_tokens": 1000,
+            "temperature": 0.1
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                response = await client.post("http://qwen3-vl:8000/v1/chat/completions", json=vl_payload, headers=headers)
+                if response.status_code != 200:
+                    raise HTTPException(status_code=response.status_code, detail=f"vLLM Qwen-VL server error: {response.text}")
+                
+                result = response.json()
+                vl_description = result["choices"][0]["message"]["content"]
+                
+                # Clean thinking tokens if they leaked into description
+                if "</think>" in vl_description:
+                    vl_description = vl_description.split("</think>", 1)[1]
+                elif "</thinking>" in vl_description:
+                    vl_description = vl_description.split("</thinking>", 1)[1]
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=503, detail=f"Could not connect to Qwen3-VL service: {str(exc)}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Qwen-VL query failed: {str(e)}")
+
+        # Step 2: Query Qwen3.6 to parse the description into structured JSON
+        parser_prompt = (
+            "You are a precise data parsing assistant. Extract all segmentable objects, their visual attributes, and their sub-objects/parts (with their attributes) from the visual description below.\n\n"
+            "Visual Description:\n"
+            f"{vl_description}\n\n"
+            "Format your response strictly as a valid JSON object matching the schema below (do NOT output any other text, reasoning, intro, notes, or markdown formatting blocks outside the JSON):\n"
+            "{\n"
+            '  "objects": [\n'
+            "    {\n"
+            '      "name": "[object name, e.g. pickup truck]",\n'
+            '      "attributes": ["[attribute 1]", "[attribute 2]"],\n'
+            '      "sub_objects": [\n'
+            "        {\n"
+            '          "name": "[sub-object name, e.g. canopy]",\n'
+            '          "attributes": ["[sub-attribute 1]"]\n'
+            "        }\n"
+            "      ]\n"
+            "    }\n"
+            "  ]\n"
+            "}"
+        )
+        
+        parser_payload = {
+            "model": os.getenv("PARSE_MODEL", "Qwen/Qwen2.5-0.5B-Instruct"),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": parser_prompt
+                }
+            ],
+            "max_tokens": 1000,
+            "temperature": 0.1
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                response = await client.post("http://qwen3-6:8000/v1/chat/completions", json=parser_payload, headers=headers)
+                if response.status_code != 200:
+                    raise HTTPException(status_code=response.status_code, detail=f"vLLM Qwen3.6 server error: {response.text}")
+                
+                result = response.json()
+                raw_parser_text = result["choices"][0]["message"]["content"]
+                
+                objects_parsed = parse_pydantic_breakdown(raw_parser_text)
+                return {
+                    "success": True,
+                    "description": "",
+                    "objects": objects_parsed
+                }
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=503, detail=f"Could not connect to Qwen3.6 service: {str(exc)}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Qwen3.6 query failed: {str(e)}")
+
+    else:
+        # Standard description query
+        payload = {
+            "model": os.getenv("VL_MODEL", "Qwen/Qwen3-VL-8B-Thinking"),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": req.prompt},
+                        {"type": media_type, **media_payload}
+                    ]
+                }
+            ],
+            "max_tokens": 1000,
+            "temperature": 0.1
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                response = await client.post("http://qwen3-vl:8000/v1/chat/completions", json=payload, headers=headers)
+                if response.status_code != 200:
+                    raise HTTPException(status_code=response.status_code, detail=f"vLLM server error: {response.text}")
+                
+                result = response.json()
+                raw_text = result["choices"][0]["message"]["content"]
+                return {
+                    "success": True,
+                    "description": raw_text,
+                    "objects": []
+                }
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=503, detail=f"Could not connect to Qwen3-VL service: {str(exc)}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+

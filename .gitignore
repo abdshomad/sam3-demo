@@ -32,3 +32,5 @@ test_video_frames/
 results/*
 plan/*
 issues/*
+screenshots/*
+*.txt
