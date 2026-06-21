@@ -21,10 +21,96 @@ interface ClickPoint {
 
 const getSamplePromptsForAsset = (path: string | null): string[] => {
   if (!path) return [];
-  if (path.includes("test_image")) return ["shoe", "the leftmost child wearing blue vest", "child"];
-  if (path.includes("truck")) return ["truck", "wheel"];
-  if (path.includes("groceries")) return ["bag", "food"];
-  if (path.includes("bedroom")) return ["bed"];
+  if (path.includes("test_image")) return [
+    // Easy — obvious objects
+    "child", "shoe", "sneakers",
+    // Clothing items
+    "red training bib", "blue training bib", "white shirt",
+    "sweatpants", "leggings",
+    // Positional — left to right
+    "leftmost child", "second child from left", "third child from left",
+    "fourth child from left", "fifth child from left", "rightmost child",
+    // By attribute — clothing color
+    "child wearing red bib", "child wearing blue bib",
+    "child wearing light blue sweatpants",
+    "child wearing black leggings",
+    // By attribute — detailed descriptions (left to right)
+    "boy in striped shirt with red bib",
+    "girl with long dark hair wearing red bib",
+    "girl with curly hair wearing blue bib and pink shirt",
+    "girl with blue headband wearing blue bib",
+    "boy in white long-sleeve shirt with red bib and black sweatpants",
+    "boy in blue bib with white sneakers and arms outstretched",
+    // Specific clothing & accessories
+    "blue headband", "pink shirt", "striped shirt",
+    "black sneakers with white soles", "white sneakers",
+    "dark sneakers with blue accents",
+    // Pose-based
+    "child running", "child standing", "child leaning forward",
+  ];
+  if (path.includes("truck")) return [
+    // Easy — the vehicle
+    "truck", "wheel", "tire", "window",
+    // Vehicle body & structure
+    "white pickup truck", "rear canopy", "truck bed",
+    "cab window", "tinted window",
+    // Wheels & trim
+    "black rubber tire", "silver steel rim", "center hubcap",
+    "front wheel arch", "rear wheel arch",
+    // Vehicle details
+    "door handle", "side-view mirror", "bull bar",
+    "front bumper", "rear bumper", "tow hitch",
+    "taillight", "side rail",
+    // Detailed descriptions
+    "white fiberglass canopy with tinted windows",
+    "silver chrome tubular grille guard",
+    "red and clear taillight assembly",
+    "black rear bumper step",
+    "black horizontal tie-down bar beneath canopy",
+    // Environment — ground & structures
+    "asphalt road", "shadow beneath truck",
+    "concrete curb", "sidewalk",
+    // Environment — background
+    "red wall", "diagonal staircase line on wall",
+    "balcony with railing", "white sculpted balusters",
+  ];
+  if (path.includes("groceries")) return [
+    // Easy — large, obvious objects
+    "bag", "food", "cargo area", "rear bumper",
+    // Medium — specific items
+    "bread", "baguette", "headrests", "red taillights", "exhaust pipe",
+    // Positional — requires spatial reasoning
+    "leftmost bag", "middle bag", "rightmost bag", "second bag from left",
+    // Detailed descriptions — vehicle interior
+    "black cargo floor mat", "beige cargo cover", "beige leather rear seats",
+    "interior side panels", "ceiling dome light", "parking sensors",
+    // Complex — background & environment
+    "paved ground", "drainage cover", "metal support pillars",
+    "trees and green foliage",
+  ];
+  if (path.includes("bedroom")) return [
+    // Easy — large, obvious objects
+    "bed", "kid", "pillow",
+    // Medium — specific furniture & bedding
+    "bed mattress", "striped bedspread",
+    // Body parts — large to small
+    "face", "head", "hair", "arms", "legs",
+    "eyes", "nose", "mouth", "ears", "neck", "shoulders",
+    "hands", "knees", "feet", "fingers", "toes",
+    // Specific people descriptions
+    "boy wearing black and white baseball shirt", "girl wearing blue dress",
+    // Specific pillows
+    "grey pillow", "white patterned pillow",
+    "light blue textured pillow", "peach pillow",
+    // Wall & decor
+    "white floating shelf", "string lights", "light switch",
+    "pink and white striped wallpaper",
+    "book on shelf", "glass jar on shelf", "candles on shelf",
+    // Complex — mirror & reflected objects
+    "white-framed floor mirror", "round wall mirror with black frame",
+    "black lamp", "white dresser with drawers",
+    "small wooden stand", "glass bottle on dresser",
+  ];
   if (path.includes("0001")) return ["person"];
   if (path.includes("dog")) return ["dog"];
   if (path.includes("player")) return ["player"];
