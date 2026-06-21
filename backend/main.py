@@ -308,8 +308,9 @@ def update_models(req: UpdateConfigRequest, background_tasks: BackgroundTasks):
             import subprocess
             try:
                 print(f"Triggering background docker compose restart for models: VL={vl_model}, PARSE={parse_model}")
+                project_name = os.getenv("COMPOSE_PROJECT_NAME", "sam3-demo-jun-2026-v2")
                 res = subprocess.run(
-                    ["docker", "compose", "up", "-d", "--force-recreate", "qwen3-vl", "qwen3-6"],
+                    ["docker", "compose", "--project-name", project_name, "up", "-d", "--force-recreate", "qwen3-vl", "qwen3-6"],
                     cwd=workspace_dir,
                     capture_output=True,
                     text=True
@@ -600,7 +601,7 @@ class DescribeRequest(BaseModel):
     prompt: Optional[str] = "Describe this asset in detail."
     want_breakdown: Optional[bool] = False
 
-def parse_pydantic_breakdown(text: str) -> list[dict]:
+def parse_pydantic_breakdown(text: str, fallback_text: Optional[str] = None) -> list[dict]:
     import re
     import json
     
@@ -662,7 +663,8 @@ def parse_pydantic_breakdown(text: str) -> list[dict]:
     # Fallback to bulleted lists
     if not objects_data:
         fallback_items = []
-        for line in text.splitlines():
+        text_to_parse = fallback_text if fallback_text is not None else text
+        for line in text_to_parse.splitlines():
             line = line.strip()
             if line.startswith("- ") or line.startswith("* "):
                 item = line[2:].strip().strip('.,;":\'')
@@ -685,6 +687,21 @@ def parse_pydantic_breakdown(text: str) -> list[dict]:
             })
             
     return objects_data
+
+async def get_active_model(base_url: str, default_model: str) -> str:
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{base_url}/v1/models")
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and "data" in data and len(data["data"]) > 0:
+                    model_id = data["data"][0]["id"]
+                    print(f"Retrieved active model {model_id} from {base_url}")
+                    return model_id
+    except Exception as e:
+        print(f"Failed to fetch active model from {base_url}: {e}. Using fallback {default_model}")
+    return default_model
 
 @app.post("/api/describe")
 async def describe_asset(req: DescribeRequest):
@@ -714,8 +731,9 @@ async def describe_asset(req: DescribeRequest):
         vl_prompt = (
             "Describe all major segmentable objects visible in this asset in detail, including their visual attributes (like color, shape, relative position, or texture) and their key sub-objects/parts (with their attributes). Do NOT limit your description to only one object; list all major elements."
         )
+        active_vl_model = await get_active_model("http://qwen3-vl:8000", os.getenv("VL_MODEL", "Qwen/Qwen3-VL-8B-Thinking"))
         vl_payload = {
-            "model": os.getenv("VL_MODEL", "Qwen/Qwen3-VL-8B-Thinking"),
+            "model": active_vl_model,
             "messages": [
                 {
                     "role": "user",
@@ -770,8 +788,9 @@ async def describe_asset(req: DescribeRequest):
             "}"
         )
         
+        active_parse_model = await get_active_model("http://qwen3-6:8000", os.getenv("PARSE_MODEL", "Qwen/Qwen2.5-0.5B-Instruct"))
         parser_payload = {
-            "model": os.getenv("PARSE_MODEL", "Qwen/Qwen2.5-0.5B-Instruct"),
+            "model": active_parse_model,
             "messages": [
                 {
                     "role": "user",
@@ -791,7 +810,7 @@ async def describe_asset(req: DescribeRequest):
                 result = response.json()
                 raw_parser_text = result["choices"][0]["message"]["content"]
                 
-                objects_parsed = parse_pydantic_breakdown(raw_parser_text)
+                objects_parsed = parse_pydantic_breakdown(raw_parser_text, vl_description)
                 return {
                     "success": True,
                     "description": "",
@@ -804,8 +823,9 @@ async def describe_asset(req: DescribeRequest):
 
     else:
         # Standard description query
+        active_vl_model = await get_active_model("http://qwen3-vl:8000", os.getenv("VL_MODEL", "Qwen/Qwen3-VL-8B-Thinking"))
         payload = {
-            "model": os.getenv("VL_MODEL", "Qwen/Qwen3-VL-8B-Thinking"),
+            "model": active_vl_model,
             "messages": [
                 {
                     "role": "user",

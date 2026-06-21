@@ -155,14 +155,14 @@ export default function Home() {
   // User Mode Config State
   const [isTechnicalMode, setIsTechnicalMode] = useState<boolean>(false);
   const [vlModel, setVlModel] = useState<string>("Qwen/Qwen3-VL-8B-Thinking");
-  const [parseModel, setParseModel] = useState<string>("Qwen/Qwen3.6-35B-A3B-FP8");
+  const [parseModel, setParseModel] = useState<string>("Qwen/Qwen2.5-0.5B-Instruct");
   const [samVersion, setSamVersion] = useState<string>("sam3.1");
   const [availableVlModels, setAvailableVlModels] = useState<any[]>([]);
   const [availableParseModels, setAvailableParseModels] = useState<any[]>([]);
   const [availableSamVersions, setAvailableSamVersions] = useState<any[]>([]);
   const [isConfigApplying, setIsConfigApplying] = useState<boolean>(false);
   const [currentActiveVl, setCurrentActiveVl] = useState<string>("Qwen/Qwen3-VL-8B-Thinking");
-  const [currentActiveParse, setCurrentActiveParse] = useState<string>("Qwen/Qwen3.6-35B-A3B-FP8");
+  const [currentActiveParse, setCurrentActiveParse] = useState<string>("Qwen/Qwen2.5-0.5B-Instruct");
   const [currentActiveSam, setCurrentActiveSam] = useState<string>("sam3.1");
 
   useEffect(() => {
@@ -332,7 +332,9 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.success) {
-        setOutputUrl(data.output_url);
+        // Cache-bust: the backend reuses the same output filename per session,
+        // so without a unique query param the browser serves the stale image.
+        setOutputUrl(`${data.output_url}?t=${Date.now()}`);
         setSessionId(data.session_id);
       } else {
         alert("Interactive click inference failed: " + data.detail);
@@ -870,6 +872,7 @@ export default function Home() {
                       ) : outputUrl ? (
                         assetType === "image" ? (
                           <img
+                            key={outputUrl}
                             src={outputUrl}
                             alt="Visual Segment"
                             className="max-h-[350px] w-auto object-contain"
